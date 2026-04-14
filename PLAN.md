@@ -220,17 +220,28 @@ What was built:
 
 4. ✅ **`ThemeData` / `ThemeLoader` unchanged** — the loader still produces `ThemeData` with `tokenColors: [TokenColorRule]`; `serializeTheme` just re-encodes that into VS Code's wire format for `setTheme`. The `include` chain resolution we added in Phase 2 still feeds in correctly.
 
-**Part B — Native oniguruma (next; fixes the regex gap)**
+**Part B — Native oniguruma ✅ (fixes the regex gap)**
 
-- Vendor oniguruma C source into `QuickLookCode/QuickLookCodeShared/Vendor/oniguruma/` and add to the framework target's Compile Sources (chosen over SwiftPM and xcframework to keep everything in one Xcode project).
-- Write `OnigScanner.swift` wrapping `onig_new` / `onig_search` / `onig_region_t`. Pick one encoding (UTF-8) and stay consistent; JS strings are UTF-16 so convert at the JSC boundary.
-- Expose `createOnigScanner(patterns)` and `createOnigString(str)` to `JSContext` via `setObject(_:forKeyedSubscript:)`. This fulfills `vscode-textmate`'s `IOnigLib` interface.
-- In [tokenizer-jsc.js](tokenizer/src/tokenizer-jsc.js), replace the inline `jsOnigLib` with `globalThis.onigLib`.
-- Delete the JS regex shim: `jsOnigLib`, `stripVerbose`, `sanitizePattern`, `buildEntry`, `capturePositions`, `makeOnigScanner` all become dead code.
-- Remove the WKWebView `tokenizer.bundle.js` path + esbuild target unless there's a reason to keep it.
-- **Result:** 100% oniguruma compatibility, native speed, no WASM, no JIT entitlement. ~300 lines of Swift.
+What was built:
 
-**Verify (after Part B):**
+1. ✅ **Vendored oniguruma C source** — `QuickLookCode/QuickLookCodeShared/Vendor/Oniguruma/` contains the full oniguruma library (48 `.c` files). Include-only data files renamed to `.inc` so Xcode's `fileSystemSynchronizedGroups` skips them as standalone translation units. POSIX/GNU compatibility wrappers (`regposix.c`, `reggnu.c`, `regposerr.c`, `mktable.c`) deleted — not needed.
+
+2. ✅ **`config.h` + `OnigShim.h`** — `config.h` sets platform constants for macOS (`HAVE_ALLOCA`, `SIZEOF_LONG`, etc.). `OnigShim.h` exposes static inline wrappers (`onigshim_utf16le()`, `onigshim_syntax_oniguruma()`) because Swift can't take `&` of imported C globals directly.
+
+3. ✅ **`module.modulemap`** — declares the `COniguruma` module so Swift can `import COniguruma`.
+
+4. ✅ **[OnigScanner.swift](QuickLookCode/QuickLookCodeShared/IDE/OnigScanner.swift)** — Swift wrapper implementing `vscode-textmate`'s `IOnigLib` interface:
+   - `OnigRuntime.ensure()` — one-time `onig_initialize` via lazy static
+   - `OnigString` — caches UTF-16 buffer of a JS string to avoid re-copying on each search
+   - `OnigScanner` — compiles patterns with `onig_new(ONIG_ENCODING_UTF16_LE)`, searches with `onig_search`. UTF-16 LE encoding chosen so byte offsets map to JS string indices by dividing by 2 — no UTF-8↔UTF-16 conversion needed.
+   - `findNextMatchSync` — iterates all compiled regexes, returns earliest match with capture indices
+   - `OnigJSBridge.install(in:)` — installs `globalThis.onigLib = { createOnigScanner, createOnigString }` via `@convention(block)` closures before the tokenizer bundle loads
+
+5. ✅ **[tokenizer-jsc.js](tokenizer/src/tokenizer-jsc.js) cleaned up** — entire JS regex shim removed (`makeOnigScanner`, `stripVerbose`, `sanitizePattern`, `buildEntry`, `capturePositions`, `jsOnigLib`). `initGrammar` now checks `globalThis.onigLib` and passes it directly to the `Registry`. WKWebView bundle target removed from `esbuild.js`.
+
+**Result:** 100% oniguruma compatibility, native speed, no WASM, no JIT entitlement. Extension registered and rendering via `qlmanage -p`.
+
+**Verify:**
 - Same Swift source file visually diffed against VS Code — comments, strings, function names, keywords, types, operators all match color-for-color.
 - Spot-check against one or two community themes that use multi-component selectors (e.g. One Dark Pro) to confirm the scope→color fix lands.
 - `qlmanage -p` on .py, .swift, .js, .json, .ts, .rs — colors identical to VS Code.

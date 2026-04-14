@@ -57,7 +57,20 @@ The project supports both **VS Code** and **Antigravity** (a VS Code fork). `IDE
 
 ### Token Scope Matching
 
-`TokenMapper` implements VS Code's exact matching algorithm: walks each token's scopes from most specific to least specific, finds the longest prefix match among theme rules. The rule with the longest matching scope string wins. This must stay in sync with how VS Code resolves colors or previews will differ from the editor.
+Scope→color resolution is handled entirely by `vscode-textmate` internally via `tokenizeLine2`. The library's registry resolves descendant selectors, parent selectors, exclusion selectors, and specificity scoring identically to VS Code. `TokenMapper.swift` has been deleted — there is no Swift-side scope matching.
+
+### Tokenization Pipeline
+
+```
+SourceCodeRenderer.render(fileURL:grammarData:theme:)
+    → serializeTheme(ThemeData) → IRawTheme JSON
+    → JSContext + OnigJSBridge.install()   ← native oniguruma via COniguruma
+    → initGrammar(grammarJSON, themeJSON)  ← vscode-textmate registry.setTheme + loadGrammar
+    → doTokenize(code)                     ← tokenizeLine2 → [{text, color, fontStyle}]
+    → HTMLRenderer.render(lines:theme:)    ← inlined-CSS HTML document
+```
+
+The JS bundle (`tokenizer-jsc.js`) is built via esbuild from `tokenizer/src/tokenizer-jsc.js`. Run `pnpm run build` inside `tokenizer/` after changing JS source.
 
 ### Quick Look Reply
 
@@ -66,8 +79,9 @@ The extension uses **data-based preview** (`QLIsDataBasedPreview: true`), not vi
 ## Current Status
 
 - **Phase 0** (Scaffolding) ✅ — extension loads, `qlmanage` works
-- **Phase 1** (IDE Integration) ✅ — IDELocator, GrammarLoader, ThemeLoader, TokenMapper complete; ContentView shows live theme info
-- **Phase 2** (WASM tokenization + HTML output) — next
+- **Phase 1** (IDE Integration) ✅ — IDELocator, GrammarLoader, ThemeLoader complete; ContentView shows live theme info
+- **Phase 2** (Tokenization + HTML output) ✅ — JSC-based vscode-textmate pipeline, HTMLRenderer, FileTypeRegistry
+- **Phase 2.5** (Native library migration) ✅ — `tokenizeLine2` for internal color resolution; native oniguruma C library replacing JS regex shim; `TokenMapper` deleted
 - **Phase 3** (Markdown renderer with cmark-gfm) — planned
 - **Phase 4** (`.ts` magic byte detection for MPEG-2 vs TypeScript) — planned
 - **Phase 5** (FSEventStream theme watching, font sync, line numbers) — planned

@@ -5,10 +5,12 @@
  * foreground colors via the registry's internal color map, and returns flat
  * {text, color, fontStyle} spans to Swift. This moves scope-to-color matching
  * (descendant/parent/exclusion selectors, specificity scoring) into the
- * library — which is what VS Code itself does.
+ * library — identical to what VS Code itself does.
  *
- * Still using a native JS RegExp approximation for oniguruma; Part B will
- * replace that with a Swift-provided onigLib.
+ * Regex engine: `globalThis.onigLib` is provided by Swift before this bundle
+ * is evaluated. It is backed by the vendored oniguruma C library (see
+ * QuickLookCodeShared/Vendor/Oniguruma), so pattern matching is byte-for-byte
+ * compatible with VS Code's tokenizer.
  *
  * Swift protocol:
  *   1. globalThis.initGrammar(grammarJSON: string, themeJSON: string)
@@ -18,151 +20,6 @@
  */
 
 import { Registry, INITIAL } from "vscode-textmate";
-
-// ---------------------------------------------------------------------------
-// Native JS regex — approximate oniguruma implementation (replaced in Part B)
-// ---------------------------------------------------------------------------
-
-const HAS_G_ANCHOR = /\\G/;
-const HAS_UNICODE_PROP = /\\[pP]\{/;
-
-function stripVerbose(p) {
-    let s = p.replace(/^\(\?[a-zA-Z]*x[a-zA-Z]*\)/, "");
-    let result = "";
-    let inClass = false;
-    let i = 0;
-    while (i < s.length) {
-        const c = s[i];
-        if (c === "\\") {
-            result += s[i] + (s[i + 1] ?? "");
-            i += 2;
-            continue;
-        }
-        if (!inClass && c === "[") { inClass = true;  result += c; i++; continue; }
-        if ( inClass && c === "]") { inClass = false; result += c; i++; continue; }
-        if (!inClass) {
-            if (c === "#") {
-                while (i < s.length && s[i] !== "\n") i++;
-                continue;
-            }
-            if (c === " " || c === "\t" || c === "\n" || c === "\r") {
-                i++;
-                continue;
-            }
-        }
-        result += c;
-        i++;
-    }
-    return result;
-}
-
-function sanitizePattern(p) {
-    if (/^\(\?[a-zA-Z]*x[a-zA-Z]*\)/.test(p)) p = stripVerbose(p);
-    return p
-        .replace(/\\x\{([0-9a-fA-F]+)\}/g, "\\u{$1}")
-        .replace(/\\h/g, "[0-9a-fA-F]")
-        .replace(/\\H/g, "[^0-9a-fA-F]")
-        .replace(/\\A/g, "")
-        .replace(/\(\?~[^)]+\)/g, "(?:)");
-}
-
-function buildEntry(pattern) {
-    const hasGAnchor = HAS_G_ANCHOR.test(pattern);
-    const hasUnicode = HAS_UNICODE_PROP.test(pattern);
-
-    const adjusted = hasGAnchor
-        ? sanitizePattern(pattern).replace(/\\G/g, "^")
-        : sanitizePattern(pattern);
-
-    const flags = (hasGAnchor ? "" : "g") + (hasUnicode ? "u" : "");
-
-    let re;
-    try {
-        re = new RegExp(adjusted, flags);
-    } catch (_) {
-        try { re = new RegExp(adjusted, hasGAnchor ? "" : "g"); } catch (_) { re = null; }
-    }
-    return { re, hasGAnchor };
-}
-
-function capturePositions(m, matchStart) {
-    const full = m[0];
-    const positions = [{
-        start: matchStart,
-        end: matchStart + full.length,
-        length: full.length,
-    }];
-
-    let searchOffset = 0;
-    for (let i = 1; i < m.length; i++) {
-        const cap = m[i];
-        if (cap === undefined || cap === null) {
-            positions.push({ start: 0, end: 0, length: 0 });
-            continue;
-        }
-        const idx = full.indexOf(cap, searchOffset);
-        if (idx === -1) {
-            positions.push({ start: 0, end: 0, length: 0 });
-        } else {
-            positions.push({
-                start: matchStart + idx,
-                end: matchStart + idx + cap.length,
-                length: cap.length,
-            });
-            searchOffset = idx + cap.length;
-        }
-    }
-    return positions;
-}
-
-function makeOnigScanner(patterns) {
-    const entries = patterns.map(buildEntry);
-
-    return {
-        findNextMatchSync(string, startPosition) {
-            const str = typeof string === "string" ? string : string.content;
-            let bestMatch = null;
-            let bestStart = Infinity;
-            let bestPatternIdx = -1;
-
-            for (let i = 0; i < entries.length; i++) {
-                const { re, hasGAnchor } = entries[i];
-                if (!re) continue;
-
-                let m, matchStart;
-                if (hasGAnchor) {
-                    const slice = str.slice(startPosition);
-                    m = re.exec(slice);
-                    if (!m) continue;
-                    matchStart = startPosition + m.index;
-                } else {
-                    re.lastIndex = startPosition;
-                    m = re.exec(str);
-                    if (!m || m.index < startPosition) continue;
-                    matchStart = m.index;
-                }
-
-                if (matchStart < bestStart) {
-                    bestMatch = m;
-                    bestStart = matchStart;
-                    bestPatternIdx = i;
-                }
-            }
-
-            if (!bestMatch) return null;
-            return {
-                index: bestPatternIdx,
-                captureIndices: capturePositions(bestMatch, bestStart),
-            };
-        },
-        dispose() {},
-    };
-}
-
-const jsOnigLib = {
-    createOnigScanner: (patterns) => makeOnigScanner(patterns),
-    createOnigString: (str) => ({ content: str, dispose() {} }),
-};
 
 // ---------------------------------------------------------------------------
 // tokenizeLine2 metadata layout (vscode-textmate MetadataConsts)
@@ -190,6 +47,11 @@ globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON) {
     _grammar = null;
     _colorMap = null;
 
+    if (!globalThis.onigLib) {
+        console.error("initGrammar: globalThis.onigLib not installed");
+        return;
+    }
+
     let grammarDef;
     try {
         grammarDef = JSON.parse(grammarJSON);
@@ -210,7 +72,7 @@ globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON) {
     const scopeName = grammarDef.scopeName;
 
     const registry = new Registry({
-        onigLib: Promise.resolve(jsOnigLib),
+        onigLib: Promise.resolve(globalThis.onigLib),
         loadGrammar: (name) =>
             name === scopeName
                 ? Promise.resolve(grammarDef)

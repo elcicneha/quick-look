@@ -151,6 +151,11 @@ public enum SourceCodeRenderer {
         // JSC has no `window`; shim it to globalThis so the iife bundle works.
         context.evaluateScript("var window = globalThis;")
 
+        // Install native oniguruma as `globalThis.onigLib` BEFORE loading the
+        // bundle — vscode-textmate picks it up from there. Native oniguruma
+        // replaces the previous JS regex approximation entirely.
+        OnigJSBridge.install(in: context)
+
         // Load the vscode-textmate bundle.
         context.evaluateScript(bundleScript)
 
