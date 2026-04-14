@@ -123,28 +123,24 @@ quick-look/
 
 ---
 
-### Phase 1 — VS Code Integration
-**Goal:** Read grammars and theme directly from VS Code's installation
+### Phase 1 — VS Code / Antigravity Integration ✅
+**Goal:** Read grammars and theme directly from the IDE installation
 
-1. **VSCodeLocator** — find VS Code at:
-   - `/Applications/Visual Studio Code.app` (standard)
-   - `~/Applications/Visual Studio Code.app` (user install)
-   - Read `~/.vscode/` for theme extensions
-   - Graceful fallback if VS Code not found
+**Verified:** Host app shows `Antigravity · Default Dark Modern · Dark · #1F1F1F`
 
-2. **GrammarLoader** — given a language name (`"python"`, `"typescript"`):
-   - Map to VS Code's grammar file path inside its extensions folder
-   - Load and cache the `.tmLanguage.json` / `.tmGrammar.json` file
+1. ✅ **IDELocator** (`QuickLookCodeShared/IDE/IDELocator.swift`) — finds VS Code (preferred) then Antigravity in `/Applications` and `~/Applications`. Returns all installed IDEs; `preferred` returns first found.
 
-3. **ThemeLoader** — find and parse the active VS Code theme:
-   - Read `~/Library/Application Support/Code/User/settings.json`
-   - Extract `"workbench.colorTheme"` value
-   - Find the matching theme JSON in VS Code's extensions or built-in themes
-   - Parse `tokenColors` array → scope → color mapping
+2. ✅ **GrammarLoader** (`QuickLookCodeShared/IDE/GrammarLoader.swift`) — searches built-in and user extensions for `.tmLanguage.json` / `.tmGrammar.json` by language name. In-memory URL cache.
 
-4. **TokenMapper** — given a list of TextMate scopes for a token, walk from most specific to least specific until a theme color is found (same algorithm VS Code uses)
+3. ✅ **ThemeLoader** (`QuickLookCodeShared/IDE/ThemeLoader.swift`) — reads `workbench.colorTheme` from `settings.json`; falls back to `"Default Dark Modern"` when unset. Scans `themes/` folders in all extensions, matches by `"name"` key inside JSON. Returns `ThemeData` with background, foreground, and `[TokenColorRule]`.
 
-**Verify:** Unit tests — load Python grammar, load Dark Modern theme, verify a known token gets the right color
+4. ✅ **TokenMapper** (`QuickLookCodeShared/IDE/TokenMapper.swift`) — TextMate prefix-matching algorithm, most-specific scope wins.
+
+5. ✅ **Entitlements** — added `temporary-exception` read-only access for `/Applications/`, `~/.vscode/`, `~/.antigravity/`, and both `Library/Application Support/` paths (app + extension).
+
+6. ✅ **Host app status UI** (`ContentView.swift`) — live display of detected IDE, path, theme name, type, and background color swatch.
+
+**Note:** IDE catalog supports VS Code + Antigravity (Google's VS Code fork). VS Code is preferred; Antigravity is fallback. Both share identical internal structure.
 
 ---
 

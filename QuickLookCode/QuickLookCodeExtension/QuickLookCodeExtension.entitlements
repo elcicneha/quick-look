@@ -10,5 +10,17 @@
 	</array>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>/Applications/</string>
+	</array>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>Applications/</string>
+		<string>Library/Application Support/Code/</string>
+		<string>Library/Application Support/Antigravity/</string>
+		<string>.vscode/</string>
+		<string>.antigravity/</string>
+	</array>
 </dict>
 </plist>
