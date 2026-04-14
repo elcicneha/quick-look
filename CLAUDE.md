@@ -83,7 +83,7 @@ The extension uses **data-based preview** (`QLIsDataBasedPreview: true`), not vi
 - **Phase 2** (Tokenization + HTML output) ✅ — JSC-based vscode-textmate pipeline, HTMLRenderer, FileTypeRegistry
 - **Phase 2.5** (Native library migration) ✅ — `tokenizeLine2` for internal color resolution; native oniguruma C library replacing JS regex shim; `TokenMapper` deleted
 - **Phase 3** (Markdown renderer with cmark-gfm) — planned
-- **Phase 4** (`.ts` magic byte detection for MPEG-2 vs TypeScript) — planned
+- **Phase 4** (`.ts` TypeScript preview) — **not achievable** via QL extension API; see PLAN.md
 - **Phase 5** (FSEventStream theme watching, font sync, line numbers) — planned
 
 See `PLAN.md` for full phase specifications.

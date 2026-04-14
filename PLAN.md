@@ -263,32 +263,27 @@ What was built:
 
 ---
 
-### Phase 4 — TypeScript `.ts` Fix (Magic Byte Detection)
-**Goal:** `.ts` TypeScript files render correctly; actual MPEG-2 video files pass through
+### Phase 4 — TypeScript `.ts` Preview ❌ NOT ACHIEVABLE
 
-**The problem:** macOS registers `.ts` as `public.mpeg-2-transport-stream` at the system level.
+**Finding:** `.ts` TypeScript preview is not possible via the Quick Look extension API on macOS.
 
-**The solution:** Declare our extension as the handler for `public.mpeg-2-transport-stream`, then inspect the file content to decide what to do.
+**Root cause (confirmed by testing):**
 
-MPEG-2 Transport Stream signature:
-- Byte 0 = `0x47`
-- Byte 188 = `0x47`
-- Byte 376 = `0x47`
-- (sync byte at every 188-byte packet boundary)
+macOS maps `.ts` → `public.mpeg-2-transport-stream` at the system UTType level. This type is handled by a hardcoded URL-based media preview pipeline inside `quicklookd` that runs **before** the extension mechanism is consulted. No amount of UTType declarations, `QLSupportedContentTypes` entries, `CFBundleDocumentTypes` claims, or `LSHandlerRank=Owner` can redirect this pipeline to a QL extension.
 
-```swift
-func isMPEG2(_ url: URL) -> Bool {
-    guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-    let data = handle.readData(ofLength: 565)
-    guard data.count >= 376 else { return false }
-    return data[0] == 0x47 && data[188] == 0x47 && data[376] == 0x47
-}
-```
+**Evidence:**
+- With `public.mpeg-2-transport-stream` in `QLSupportedContentTypes` and a dummy pink HTML response in the extension, the extension was never called — `qlmanage -p` reported `produced a preview with a URL of type public.mpeg-2-transport-stream`
+- For `.swift` files (no competing media handler), the extension is correctly invoked
+- Tested both from DerivedData and from a properly installed `/Applications` build — no difference
+- `lsregister` confirmed `LSHandlerRank=Owner` was registered; it had no effect on QL routing
 
-- If MPEG-2 → throw `QLPreviewError.notSupported` (system handles it)
-- If text → render as TypeScript
+**Approaches attempted and failed:**
+1. `public.mpeg-2-transport-stream` in `QLSupportedContentTypes`
+2. Custom UTType `com.nehagupta.quicklookcode.typescript` exporting `.ts`
+3. `CFBundleDocumentTypes` + `LSHandlerRank=Owner` on the host app
+4. Installing to `/Applications` for proper LS registration
 
-**Verify:** TypeScript files render. A real `.ts` video file falls through to system handler.
+**Conclusion:** `.ts` is a macOS-reserved extension for a media type. The QL media pipeline is not extensible. Skip this phase.
 
 ---
 
@@ -333,9 +328,8 @@ killall -HUP Finder
 # Check extension is registered
 pluginkit -m -v | grep quicklook
 
-# Verify .ts magic byte detection
-qlmanage -p sample.ts        # should render TypeScript
-qlmanage -p sample-video.ts  # should fall through
+# Note: .ts files are NOT supported — macOS routes them through
+# the media preview pipeline before QL extensions are consulted
 ```
 
 ---
