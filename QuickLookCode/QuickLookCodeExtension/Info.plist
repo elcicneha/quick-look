@@ -31,7 +31,7 @@
 				<string>public.ruby-script</string>
 				<string>public.shell-script</string>
 				<string>public.perl-script</string>
-				<string>public.javascript</string>
+				<string>com.netscape.javascript-source</string>
 				<string>public.html</string>
 				<string>public.css</string>
 				<string>public.xml</string>
@@ -76,6 +76,18 @@
 				<string>com.nehagupta.quicklookcode.wgsl</string>
 				<string>com.nehagupta.quicklookcode.solidity</string>
 				<string>com.nehagupta.quicklookcode.prisma</string>
+
+				<!-- New additions -->
+				<string>com.nehagupta.quicklookcode.typescript-module</string>
+				<string>com.nehagupta.quicklookcode.python-stub</string>
+				<string>com.nehagupta.quicklookcode.korn-shell</string>
+				<string>com.nehagupta.quicklookcode.bat</string>
+				<string>com.nehagupta.quicklookcode.handlebars</string>
+				<string>com.nehagupta.quicklookcode.pug</string>
+				<string>com.nehagupta.quicklookcode.properties</string>
+				<string>com.nehagupta.quicklookcode.latex</string>
+				<string>com.nehagupta.quicklookcode.literate-haskell</string>
+				<string>com.nehagupta.quicklookcode.clojure-common</string>
 			</array>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
@@ -694,6 +706,10 @@
 					<string>vert</string>
 					<string>frag</string>
 					<string>hlsl</string>
+					<string>geom</string>
+					<string>tesc</string>
+					<string>tese</string>
+					<string>comp</string>
 				</array>
 			</dict>
 		</dict>
@@ -748,6 +764,202 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>prisma</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- TypeScript module variants (.mts, .cts) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.typescript-module</string>
+			<key>UTTypeDescription</key>
+			<string>TypeScript Module</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mts</string>
+					<string>cts</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Python type stub (.pyi) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.python-stub</string>
+			<key>UTTypeDescription</key>
+			<string>Python Type Stub</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pyi</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Korn Shell (.ksh) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.korn-shell</string>
+			<key>UTTypeDescription</key>
+			<string>Korn Shell Script</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>ksh</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Windows Batch / Command (.bat, .cmd) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.bat</string>
+			<key>UTTypeDescription</key>
+			<string>Windows Batch File</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>bat</string>
+					<string>cmd</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Handlebars (.hbs, .handlebars) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.handlebars</string>
+			<key>UTTypeDescription</key>
+			<string>Handlebars Template</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>hbs</string>
+					<string>handlebars</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Pug / Jade (.pug, .jade) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.pug</string>
+			<key>UTTypeDescription</key>
+			<string>Pug Template</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pug</string>
+					<string>jade</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Java Properties (.properties) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.properties</string>
+			<key>UTTypeDescription</key>
+			<string>Java Properties File</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>properties</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- LaTeX (.tex, .latex, .sty) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.latex</string>
+			<key>UTTypeDescription</key>
+			<string>LaTeX Document</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>tex</string>
+					<string>latex</string>
+					<string>sty</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Literate Haskell (.lhs) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.literate-haskell</string>
+			<key>UTTypeDescription</key>
+			<string>Literate Haskell Source</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>lhs</string>
+				</array>
+			</dict>
+		</dict>
+
+		<!-- Clojure Common (.cljc) -->
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.nehagupta.quicklookcode.clojure-common</string>
+			<key>UTTypeDescription</key>
+			<string>Clojure Common Source</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.source-code</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>cljc</string>
 				</array>
 			</dict>
 		</dict>
