@@ -49,6 +49,7 @@ class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         guard let grammar = (try? grammarLoader.grammarData(for: langInfo.grammarSearch)) ?? nil else {
             return plainText(fileURL: fileURL, fileName: fileName, reason: "Grammar not found for \(langInfo.displayName)")
         }
+        let siblingGrammars = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
 
         // 4. Load theme
         guard let theme = try? ThemeLoader.loadActiveTheme(from: ide) else {
@@ -60,6 +61,7 @@ class PreviewProvider: QLPreviewProvider, QLPreviewingController {
             return try await SourceCodeRenderer.render(
                 fileURL: fileURL,
                 grammarData: grammar,
+                siblingGrammars: siblingGrammars,
                 theme: theme,
                 languageInfo: langInfo,
                 fileName: fileName

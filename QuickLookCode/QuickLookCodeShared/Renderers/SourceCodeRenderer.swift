@@ -54,13 +54,14 @@ public enum SourceCodeRenderer {
     public static func render(
         fileURL: URL,
         grammarData: Data,
+        siblingGrammars: [Data] = [],
         theme: ThemeData,
         languageInfo: FileTypeRegistry.LanguageInfo,
         fileName: String
     ) async throws -> Data {
         let (content, truncationNote) = readFile(at: fileURL)
 
-        let rawLines = try tokenize(code: content, grammarData: grammarData, theme: theme)
+        let rawLines = try tokenize(code: content, grammarData: grammarData, siblingGrammars: siblingGrammars, theme: theme)
 
         let spanLines: [[HTMLRenderer.TokenSpan]] = rawLines.map { line in
             line.map { raw in
@@ -121,7 +122,7 @@ public enum SourceCodeRenderer {
 
     // MARK: - JSC tokenization
 
-    static func tokenize(code: String, grammarData: Data, theme: ThemeData) throws -> [[RawToken]] {
+    static func tokenize(code: String, grammarData: Data, siblingGrammars: [Data] = [], theme: ThemeData) throws -> [[RawToken]] {
         guard let grammarJSON = String(data: grammarData, encoding: .utf8) else {
             throw RendererError.grammarNotUTF8
         }
@@ -145,8 +146,17 @@ public enum SourceCodeRenderer {
         let context = JSContext()!
         context.exceptionHandler = { _, exception in
             guard let msg = exception?.toString() else { return }
-            NSLog("[QuickLookCode] JSC: %@", msg)
+            NSLog("[QuickLookCode] JSC exception: %@", msg)
         }
+
+        // Bridge console.error → NSLog so JS diagnostics appear in the system log.
+        let nslogBlock: @convention(block) (String) -> Void = { msg in
+            NSLog("[QuickLookCode] JS: %@", msg)
+        }
+        context.setObject(nslogBlock, forKeyedSubscript: "__nslog" as NSString)
+        context.evaluateScript(
+            "console.error = function() { try { __nslog(Array.prototype.slice.call(arguments).join(' ')); } catch(e) {} };"
+        )
 
         // JSC has no `window`; shim it to globalThis so the iife bundle works.
         context.evaluateScript("var window = globalThis;")
@@ -162,8 +172,11 @@ public enum SourceCodeRenderer {
         // Step 1 — init grammar + theme.
         // After this call, JSC drains its microtask queue automatically, so
         // _grammar is set before doTokenize runs.
+        let siblingJSONStrings = siblingGrammars.compactMap { String(data: $0, encoding: .utf8) }
+        let siblingGrammarsJSON = (try? JSONSerialization.data(withJSONObject: siblingJSONStrings))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let initFn = context.objectForKeyedSubscript("initGrammar")
-        initFn?.call(withArguments: [grammarJSON, themeJSON])
+        initFn?.call(withArguments: [grammarJSON, themeJSON, siblingGrammarsJSON])
 
         // Step 2 — tokenize. Returns Array<Array<{text, color, fontStyle}>> or null.
         let tokenizeFn = context.objectForKeyedSubscript("doTokenize")

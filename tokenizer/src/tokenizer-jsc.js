@@ -43,7 +43,7 @@ const FOREGROUND_MASK = 0x1FF;
 let _grammar = null;
 let _colorMap = null;
 
-globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON) {
+globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON, siblingGrammarsJSON) {
     _grammar = null;
     _colorMap = null;
 
@@ -71,12 +71,27 @@ globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON) {
 
     const scopeName = grammarDef.scopeName;
 
+    // Build a map of all known grammars (main + siblings) keyed by scopeName.
+    // This allows vscode-textmate to resolve cross-grammar `include` references
+    // such as `source.yaml.embedded` or `source.yaml.1.2`.
+    const grammarMap = new Map();
+    grammarMap.set(scopeName, grammarDef);
+    if (siblingGrammarsJSON) {
+        let siblings;
+        try { siblings = JSON.parse(siblingGrammarsJSON); } catch (e) {}
+        if (Array.isArray(siblings)) {
+            for (const jsonStr of siblings) {
+                try {
+                    const g = JSON.parse(jsonStr);
+                    if (g && g.scopeName) grammarMap.set(g.scopeName, g);
+                } catch (e) {}
+            }
+        }
+    }
+
     const registry = new Registry({
         onigLib: Promise.resolve(globalThis.onigLib),
-        loadGrammar: (name) =>
-            name === scopeName
-                ? Promise.resolve(grammarDef)
-                : Promise.resolve(null),
+        loadGrammar: (name) => Promise.resolve(grammarMap.get(name) ?? null),
     });
 
     if (theme) {
