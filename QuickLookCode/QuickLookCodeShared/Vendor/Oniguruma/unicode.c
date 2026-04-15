@@ -74,7 +74,7 @@ static const unsigned short EncUNICODE_ISO_8859_1_CtypeTable[256] = {
 
 #include "st.h"
 
-#include "unicode_fold_data.inc"
+#include "unicode_fold_data.h"
 
 extern int
 onigenc_unicode_mbc_case_fold(OnigEncoding enc, OnigCaseFoldType flag,
@@ -585,9 +585,9 @@ onigenc_unicode_get_case_fold_codes_by_str(OnigEncoding enc,
 }
 
 #ifdef USE_UNICODE_PROPERTIES
-#include "unicode_property_data.inc"
+#include "unicode_property_data.h"
 #else
-#include "unicode_property_data_posix.inc"
+#include "unicode_property_data_posix.h"
 #endif
 
 
@@ -621,7 +621,7 @@ typedef struct {
   enum WB_TYPE  type;
 } WB_RANGE_TYPE;
 
-#include "unicode_wb_data.inc"
+#include "unicode_wb_data.h"
 
 static enum WB_TYPE
 wb_get_type(OnigCodePoint code)
@@ -905,7 +905,7 @@ typedef struct {
   enum EGCB_TYPE type;
 } EGCB_RANGE_TYPE;
 
-#include "unicode_egcb_data.inc"
+#include "unicode_egcb_data.h"
 
 static enum EGCB_TYPE
 egcb_get_type(OnigCodePoint code)
