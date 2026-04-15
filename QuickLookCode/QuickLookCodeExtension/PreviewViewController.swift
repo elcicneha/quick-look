@@ -15,8 +15,15 @@ class PreviewViewController: NSViewController, QLPreviewingController {
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 6
+        container.layer?.masksToBounds = true
+
         webView = WKWebView(frame: container.bounds, configuration: WKWebViewConfiguration())
         webView.autoresizingMask = [.width, .height]
+        webView.wantsLayer = true
+        webView.layer?.cornerRadius = 6
+        webView.layer?.masksToBounds = true
         container.addSubview(webView)
         self.view = container
     }
