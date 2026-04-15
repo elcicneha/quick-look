@@ -64,7 +64,7 @@ public enum MarkdownRenderer {
         let sourceHTML = await generateSourceHTML(markdown: markdown, theme: theme, ide: ide)
 
         // 7. Assemble final document
-        let html = assembleHTML(body: resolvedHTML, sourceHTML: sourceHTML, css: css, fileName: fileName)
+        let html = assembleHTML(body: resolvedHTML, sourceHTML: sourceHTML, css: css, fileName: fileName, theme: theme)
         return Data(html.utf8)
     }
 }
@@ -356,7 +356,7 @@ private extension MarkdownRenderer {
 
 private extension MarkdownRenderer {
 
-    static func assembleHTML(body: String, sourceHTML: String, css: String, fileName: String) -> String {
+    static func assembleHTML(body: String, sourceHTML: String, css: String, fileName: String, theme: ThemeData) -> String {
         let escapedTitle = fileName
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -372,6 +372,8 @@ private extension MarkdownRenderer {
         \(ToolbarRenderer.css)
         \(css)
         .line { display: block; min-height: 1.6em; white-space: pre; }
+        #ql-radio-code:checked ~ #ql-content { background: \(theme.background); }
+        #ql-view-code pre { border-radius: 0; margin-bottom: 0; }
         </style>
         </head>
         <body>
