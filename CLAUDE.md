@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Naming Convention
+
+**Internal code pattern**: `QuickLookCode` / `quicklookcode` — used everywhere in code, bundle IDs, app group identifiers, UTType identifiers, Swift module names, file names. Never change these; they are plumbing, not branding.
+
+**User-facing display name**: `Peekaboo` — used only in `CFBundleDisplayName` (already set in `project.pbxproj`) and the README. This is a marketing name and may change independently of the code.
+
+Do not conflate the two. If the display name changes again, only update `INFOPLIST_KEY_CFBundleDisplayName` in `project.pbxproj` and the README title — nothing else.
+
 ## Build & Test Commands
 
 ```bash
