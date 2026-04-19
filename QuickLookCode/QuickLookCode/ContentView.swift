@@ -15,7 +15,7 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("QuickLookCode", systemImage: "doc.text.magnifyingglass")
+                Label("Peekaboo", systemImage: "doc.text.magnifyingglass")
                     .font(.title2.bold())
                 Spacer()
                 Button(action: refresh) {

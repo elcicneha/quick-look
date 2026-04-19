@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a Release QuickLookCode.app and package it as a zip suitable for
+# Build a Release build of the app and package it as a zip suitable for
 # distribution to people who do NOT have a paid Apple Developer account.
 #
 # The resulting zip is signed with the project's Personal Team (automatic
@@ -20,7 +20,9 @@ PROJECT="$REPO_ROOT/QuickLookCode/QuickLookCode.xcodeproj"
 SCHEME="QuickLookCode"
 BUILD_DIR="$REPO_ROOT/build"
 DIST_DIR="$REPO_ROOT/dist"
-APP_NAME="QuickLookCode.app"
+
+APP_NAME="Peekaboo.app"
+DIST_NAME="Peekaboo"
 
 cd "$REPO_ROOT"
 
@@ -48,7 +50,7 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-echo "==> Packaging QuickLookCode v$VERSION"
+echo "==> Packaging $DIST_NAME v$VERSION"
 
 # --- clean build -------------------------------------------------------------
 
@@ -141,7 +143,7 @@ codesign -d --entitlements :- "$EXT_PATH" 2>/dev/null \
 echo "==> Stripping local quarantine xattrs"
 xattr -cr "$APP_PATH"
 
-ZIP_PATH="$DIST_DIR/QuickLookCode-v${VERSION}.zip"
+ZIP_PATH="$DIST_DIR/${DIST_NAME}-v${VERSION}.zip"
 rm -f "$ZIP_PATH"
 
 echo "==> Zipping with ditto (preserves symlinks + code signature)"
@@ -161,8 +163,8 @@ echo "================================================================"
 echo
 echo "Send the zip + these four lines to the user:"
 echo
-echo "  mv ~/Downloads/QuickLookCode.app /Applications/"
-echo "  xattr -dr com.apple.quarantine /Applications/QuickLookCode.app"
-echo "  open /Applications/QuickLookCode.app"
+echo "  mv ~/Downloads/$APP_NAME /Applications/"
+echo "  xattr -dr com.apple.quarantine /Applications/$APP_NAME"
+echo "  open /Applications/$APP_NAME"
 echo "  qlmanage -r && killall -HUP Finder"
 echo

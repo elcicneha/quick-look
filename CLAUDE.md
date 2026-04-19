@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Naming Convention
 
-**Internal code pattern**: `QuickLookCode` / `quicklookcode` — used everywhere in code, bundle IDs, app group identifiers, UTType identifiers, Swift module names, file names. Never change these; they are plumbing, not branding.
+**Internal code pattern**: `QuickLookCode` / `quicklookcode` — used in bundle IDs, app group identifiers, UTType identifiers, Swift module names, Xcode target names, scheme name, the `.xcodeproj` filename, source file names, source file folders, and the embedded extension/framework bundle filenames (`QuickLookCodeExtension.appex`, `QuickLookCodeShared.framework`). Never change these; they are plumbing, referenced by bundle ID and `@rpath`.
 
-**User-facing display name**: `Peekaboo` — used only in `CFBundleDisplayName` (already set in `project.pbxproj`) and the README. This is a marketing name and may change independently of the code.
+**User-facing display name**: `Peekaboo` — used in `CFBundleDisplayName`, `CFBundleName`, `PRODUCT_NAME` for the host-app target (all set in `project.pbxproj`), and the README. The host-app target's `PRODUCT_NAME = Peekaboo` means every build (debug or release) produces `Peekaboo.app` directly — no post-build rename. The extension and framework targets keep `PRODUCT_NAME = $(TARGET_NAME)` so their inner bundle filenames remain plumbing.
 
-Do not conflate the two. If the display name changes again, only update `INFOPLIST_KEY_CFBundleDisplayName` in `project.pbxproj` and the README title — nothing else.
+macOS uses both Info.plist keys on different surfaces: `CFBundleDisplayName` wins in Finder/Spotlight, `CFBundleName` wins in the menu bar and some system dialogs. If the display name changes again, update `INFOPLIST_KEY_CFBundleDisplayName` and `INFOPLIST_KEY_CFBundleName` (all four host-app + extension configs), the host app's `PRODUCT_NAME` (Debug + Release only), and the README title — nothing else.
 
 ## Build & Test Commands
 
@@ -17,7 +17,7 @@ Do not conflate the two. If the display name changes again, only update `INFOPLI
 xcodebuild -project QuickLookCode/QuickLookCode.xcodeproj -scheme QuickLookCode -configuration Debug build
 
 # Install to /Applications (required for proper Quick Look / LS registration)
-cp -R ~/Library/Developer/Xcode/DerivedData/QuickLookCode-*/Build/Products/Debug/QuickLookCode.app /Applications/
+cp -R ~/Library/Developer/Xcode/DerivedData/QuickLookCode-*/Build/Products/Debug/Peekaboo.app /Applications/
 
 # Test the extension on a file
 qlmanage -p path/to/file.swift
@@ -39,7 +39,7 @@ cd tokenizer && pnpm run build
 # Produce a distributable zip (Release build) for non-Developer-ID distribution
 ./scripts/package.sh                    # uses MARKETING_VERSION from project.pbxproj
 ./scripts/package.sh 1.2.0              # or override the version in the zip filename
-# Output: dist/QuickLookCode-v<VERSION>.zip
+# Output: dist/Peekaboo-v<VERSION>.zip (contains Peekaboo.app)
 ```
 
 ## Distribution

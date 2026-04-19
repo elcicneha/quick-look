@@ -15,13 +15,13 @@ Press Space on any code file in Finder and get a preview that actually looks lik
 
 Peekaboo is not notarized (no paid Apple Developer account), so macOS Gatekeeper will refuse to open it by default. Stripping the quarantine attribute tells Gatekeeper the app didn't come from the internet and lets it launch.
 
-1. Download the latest `QuickLookCode-v*.zip` from [Releases](../../releases) and unzip it.
+1. Download the latest `Peekaboo-v*.zip` from [Releases](../../releases) and unzip it.
 2. Run these four lines in Terminal. If you extracted somewhere other than `~/Downloads`, update the path in the first line:
 
    ```bash
-   mv ~/Downloads/QuickLookCode.app /Applications/
-   xattr -dr com.apple.quarantine /Applications/QuickLookCode.app
-   open /Applications/QuickLookCode.app
+   mv ~/Downloads/Peekaboo.app /Applications/
+   xattr -dr com.apple.quarantine /Applications/Peekaboo.app
+   open /Applications/Peekaboo.app
    qlmanage -r && killall -HUP Finder
    ```
 
@@ -33,7 +33,7 @@ If previews don't appear, quit and reopen Finder, or run `qlmanage -r && killall
 
 ```bash
 xcodebuild -project QuickLookCode/QuickLookCode.xcodeproj -scheme QuickLookCode -configuration Debug build
-cp -R ~/Library/Developer/Xcode/DerivedData/QuickLookCode-*/Build/Products/Debug/QuickLookCode.app /Applications/
+cp -R ~/Library/Developer/Xcode/DerivedData/QuickLookCode-*/Build/Products/Debug/Peekaboo.app /Applications/
 qlmanage -r && killall -HUP Finder
 ```
 
