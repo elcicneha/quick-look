@@ -132,7 +132,7 @@ public enum HTMLRenderer {
         \(lineNumberCSS)
         </style>
         </head>
-        <body>
+        <body\(theme.isDark ? " class=\"dark\"" : "")>
         \(ToolbarRenderer.wordWrapCheckboxHTML)
         <div id="ql-content">
         \(ToolbarRenderer.wordWrapOverlayHTML)

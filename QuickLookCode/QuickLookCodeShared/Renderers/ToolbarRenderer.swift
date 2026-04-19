@@ -193,35 +193,38 @@ public enum ToolbarRenderer {
             border-color: var(--wrap-border-checked);
         }
 
-        /* ── Light mode ───────────────────────────────────────────────── */
-        @media (prefers-color-scheme: light) {
-            #ql-toolbar {
-                background: rgba(235, 235, 235, 0.97);
-                border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-            }
-            .ql-pill {
-                background: rgba(0, 0, 0, 0.07);
-            }
-            .ql-pill label {
-                color: rgba(0, 0, 0, 0.45);
-            }
-            #ql-btn-preview {
-                background: rgba(0, 0, 0, 0.11);
-                color: rgba(0, 0, 0, 0.85);
-            }
-            #ql-radio-code:checked ~ #ql-toolbar #ql-btn-preview {
-                background: transparent;
-                color: rgba(0, 0, 0, 0.45);
-            }
-            #ql-radio-code:checked ~ #ql-toolbar #ql-btn-code {
-                background: rgba(0, 0, 0, 0.11);
-                color: rgba(0, 0, 0, 0.85);
-            }
-            #ql-radio-preview:checked ~ #ql-toolbar #ql-btn-code:hover,
-            #ql-radio-code:checked   ~ #ql-toolbar #ql-btn-preview:hover {
-                background: rgba(0, 0, 0, 0.05);
-                color: rgba(0, 0, 0, 0.6);
-            }
+        /* ── Light mode ───────────────────────────────────────────────────
+           Applies when <body> does NOT carry the .dark class. Swift adds the
+           class in the code-file HTML template (HTMLRenderer) and in the
+           markdown template (MarkdownRenderer) based on the active VS Code
+           theme's isDark flag, so the toolbar follows the code theme rather
+           than the system appearance. */
+        body:not(.dark) #ql-toolbar {
+            background: rgba(235, 235, 235, 0.97);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        body:not(.dark) .ql-pill {
+            background: rgba(0, 0, 0, 0.07);
+        }
+        body:not(.dark) .ql-pill label {
+            color: rgba(0, 0, 0, 0.45);
+        }
+        body:not(.dark) #ql-btn-preview {
+            background: rgba(0, 0, 0, 0.11);
+            color: rgba(0, 0, 0, 0.85);
+        }
+        body:not(.dark) #ql-radio-code:checked ~ #ql-toolbar #ql-btn-preview {
+            background: transparent;
+            color: rgba(0, 0, 0, 0.45);
+        }
+        body:not(.dark) #ql-radio-code:checked ~ #ql-toolbar #ql-btn-code {
+            background: rgba(0, 0, 0, 0.11);
+            color: rgba(0, 0, 0, 0.85);
+        }
+        body:not(.dark) #ql-radio-preview:checked ~ #ql-toolbar #ql-btn-code:hover,
+        body:not(.dark) #ql-radio-code:checked   ~ #ql-toolbar #ql-btn-preview:hover {
+            background: rgba(0, 0, 0, 0.05);
+            color: rgba(0, 0, 0, 0.6);
         }
 
         /* ── Narrow viewport (Column View preview pane) ───────────────── */

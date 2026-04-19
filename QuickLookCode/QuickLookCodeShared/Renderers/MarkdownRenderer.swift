@@ -142,7 +142,7 @@ private extension MarkdownRenderer {
     ) async -> String {
         // Match <pre><code class="language-LANG">...content...</code></pre>
         // cmark-gfm always emits this structure for fenced code blocks.
-        let pattern = #"<pre><code(?:\s+class="language-([^"]*)")?>([\\s\\S]*?)</code></pre>"#
+        let pattern = #"<pre><code(?:\s+class="language-([^"]*)")?>([\s\S]*?)</code></pre>"#
         guard let regex = try? NSRegularExpression(
             pattern: pattern,
             options: [.dotMatchesLineSeparators]
@@ -327,7 +327,11 @@ private extension MarkdownRenderer {
                   !src.hasPrefix("data:")
             else { continue }
 
-            let fileURL = baseURL.appendingPathComponent(src)
+            // Percent-decode so URL-encoded spaces etc. (`%20` → ` `) resolve
+            // to real filenames on disk. `appendingPathComponent` treats its
+            // argument as literal, so `%20` would otherwise stay as-is.
+            let decoded = src.removingPercentEncoding ?? src
+            let fileURL = baseURL.appendingPathComponent(decoded)
             guard
                 let data = try? Data(contentsOf: fileURL),
                 data.count <= maxImageBytes
@@ -383,7 +387,7 @@ private extension MarkdownRenderer {
         #ql-view-code pre { border-radius: 0; margin-bottom: 0; }
         </style>
         </head>
-        <body>
+        <body\(theme.isDark ? " class=\"dark\"" : "")>
         \(ToolbarRenderer.toggleInputsHTML)
         \(ToolbarRenderer.wordWrapCheckboxHTML)
         \(ToolbarRenderer.toolbarHTML)

@@ -1,10 +1,8 @@
 /* QuickLookCode — Markdown stylesheet
-   Prose follows system light/dark mode.
+   Prose follows the active VS Code theme's isDark flag (MarkdownRenderer
+   adds class="dark" to <body> when the code theme is dark), not the system
+   light/dark setting.
    Code blocks use inline style= from the VS Code theme and always override. */
-
-:root {
-    color-scheme: light dark;
-}
 
 /* ── Light mode defaults ─────────────────────────────────────────────────── */
 body {
@@ -19,23 +17,23 @@ body {
     --md-heading-border: #d1d9e0;
     --md-table-alt:      #f6f8fa;
     --md-hr:             #d1d9e0;
+    color-scheme:        light;
 }
 
-/* ── Dark mode overrides ─────────────────────────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-    body {
-        --md-bg:             #0d1117;
-        --md-fg:             #e6edf3;
-        --md-muted:          #848d97;
-        --md-code-bg:        rgba(110, 118, 129, 0.4);
-        --md-code-fg:        #e6edf3;
-        --md-border:         #30363d;
-        --md-blockquote:     #848d97;
-        --md-link:           #58a6ff;
-        --md-heading-border: #21262d;
-        --md-table-alt:      #161b22;
-        --md-hr:             #21262d;
-    }
+/* ── Dark mode (theme.isDark on the active VS Code theme) ───────────────── */
+body.dark {
+    --md-bg:             #0d1117;
+    --md-fg:             #e6edf3;
+    --md-muted:          #848d97;
+    --md-code-bg:        rgba(110, 118, 129, 0.4);
+    --md-code-fg:        #e6edf3;
+    --md-border:         #30363d;
+    --md-blockquote:     #848d97;
+    --md-link:           #58a6ff;
+    --md-heading-border: #21262d;
+    --md-table-alt:      #161b22;
+    --md-hr:             #21262d;
+    color-scheme:        dark;
 }
 
 /* ── Reset & base ────────────────────────────────────────────────────────── */
