@@ -319,7 +319,7 @@ private extension MarkdownRenderer {
         }.joined()
 
         return """
-        <pre style="background:\(theme.background);color:\(theme.foreground)"><code \
+        <pre style="background:var(--md-code-bg);color:\(theme.foreground)"><code \
         class="language-\(lang)" style="display:block">\(codeHTML)</code></pre>
         """
     }
@@ -364,7 +364,7 @@ private extension MarkdownRenderer {
         let escaped = escapeHTML(code)
         let classAttr = lang.isEmpty ? "" : " class=\"language-\(lang)\""
         return """
-        <pre style="background:\(theme.background);color:\(theme.foreground)"><code\
+        <pre style="background:var(--md-code-bg);color:\(theme.foreground)"><code\
         \(classAttr)>\(escaped)</code></pre>
         """
     }
