@@ -275,9 +275,8 @@ private extension MarkdownRenderer {
     ) async -> String {
         let plainFallback = makePlainBlock(code: code, lang: lang, theme: theme)
 
-        guard !lang.isEmpty,
-              let langInfo = FileTypeRegistry.language(forExtension: lang)
-        else { return plainFallback }
+        guard !lang.isEmpty else { return plainFallback }
+        let langInfo = FileTypeRegistry.language(forCodeFenceTag: lang)
 
         // Load grammar (cached)
         let grammarData: Data
@@ -291,11 +290,17 @@ private extension MarkdownRenderer {
             grammarData = data
         }
 
+        // Siblings satisfy cross-grammar `include` references (e.g. yaml
+        // splits into yaml.tmLanguage + yaml-1.x + yaml-embedded). Without
+        // them tokenization comes back empty for multi-file grammars.
+        let siblings = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+
         // Tokenize via shared TokenizerEngine (reuses warm JSContext)
         guard let rawLines = try? await SourceCodeRenderer.tokenize(
             code: code,
             language: langInfo.grammarSearch,
             grammarData: grammarData,
+            siblingGrammars: siblings,
             theme: theme
         ) else { return plainFallback }
 

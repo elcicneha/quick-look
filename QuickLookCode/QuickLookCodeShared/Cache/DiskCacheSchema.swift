@@ -10,8 +10,9 @@ import Foundation
 
 enum DiskCacheSchema {
 
-    // Increment this when any Codable struct below changes.
-    static let schemaVersion = 1
+    // Increment this when any Codable struct below changes OR when a grammar-
+    // index rebuild is needed (e.g. after fixing GrammarLoader's search logic).
+    static let schemaVersion = 2
 
     static let appGroup = "group.com.nehagupta.quicklookcode"
     static let dirName  = "quicklookcode"

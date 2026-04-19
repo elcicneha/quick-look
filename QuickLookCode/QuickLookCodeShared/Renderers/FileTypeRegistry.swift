@@ -20,6 +20,20 @@ public enum FileTypeRegistry {
         registry[ext.lowercased()]
     }
 
+    /// Returns language info for a markdown code-fence tag like `` ```python ``,
+    /// `` ```rust ``, or `` ```yaml ``. Tries the file-extension registry first,
+    /// then falls back to treating the tag itself as the grammar search term —
+    /// most markdown language IDs (`python`, `rust`, `ruby`, `javascript`, …)
+    /// double as VS Code grammar directory names, and a substring match in
+    /// `GrammarLoader` will find them (`.../python/syntaxes/MagicPython.tmLanguage.json`
+    /// contains `python`, etc.). Always returns a value so the caller can
+    /// still attempt a lookup for IDE-installed languages we haven't indexed.
+    public static func language(forCodeFenceTag tag: String) -> LanguageInfo {
+        let lower = tag.lowercased()
+        if let info = registry[lower] { return info }
+        return LanguageInfo(grammarSearch: lower, displayName: tag)
+    }
+
     /// All unique grammar search terms across all registered file types.
     /// Used by CacheManager to pre-index grammar file locations.
     public static var allGrammarSearchTerms: Set<String> {
@@ -109,7 +123,7 @@ public enum FileTypeRegistry {
         "gql":      .init(grammarSearch: "graphql",          displayName: "GraphQL"),
 
         // Infra / DevOps
-        "dockerfile": .init(grammarSearch: "dockerfile",     displayName: "Dockerfile"),
+        "dockerfile": .init(grammarSearch: "docker",         displayName: "Dockerfile"),
         "tf":       .init(grammarSearch: "terraform",        displayName: "Terraform"),
         "hcl":      .init(grammarSearch: "hcl",              displayName: "HCL"),
         "proto":    .init(grammarSearch: "proto3",           displayName: "Protobuf"),

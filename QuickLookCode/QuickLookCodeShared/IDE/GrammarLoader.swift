@@ -142,6 +142,14 @@ public final class GrammarLoader {
         ) else { return nil }
 
         let langLower = language.lowercased()
+        // Walk every extension's syntax dir and pick the GLOBALLY shortest
+        // stem that contains the language substring. Early-returning after
+        // the first matching extension picks the wrong grammar when another
+        // extension contains the term only incidentally — e.g. a "html"
+        // search against Razor's `cshtml.tmLanguage.json` before reaching
+        // the real `html/syntaxes/html.tmLanguage.json`.
+        var bestFile: URL? = nil
+        var bestStemLength = Int.max
         for extDir in extensions {
             for syntaxDir in ["syntaxes", "grammars"] {
                 let dir = extDir.appendingPathComponent(syntaxDir)
@@ -150,9 +158,6 @@ public final class GrammarLoader {
                     includingPropertiesForKeys: nil,
                     options: .skipsHiddenFiles
                 ) else { continue }
-
-                var bestFile: URL? = nil
-                var bestStemLength = Int.max
                 for file in files {
                     guard file.pathExtension == "json" else { continue }
                     let stem = file.deletingPathExtension().lastPathComponent.lowercased()
@@ -161,9 +166,8 @@ public final class GrammarLoader {
                         bestStemLength = stem.count
                     }
                 }
-                if let bestFile { return bestFile }
             }
         }
-        return nil
+        return bestFile
     }
 }
