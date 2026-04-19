@@ -101,6 +101,7 @@ public enum HTMLRenderer {
         <style>
         *, *::before, *::after { box-sizing: border-box; }
         \(ToolbarRenderer.css)
+        :root { \(ToolbarRenderer.wrapColorVariables(for: theme)) }
         body {
             font-family: \(font);
             font-size: \(fontSize)px;
@@ -133,8 +134,8 @@ public enum HTMLRenderer {
         </head>
         <body>
         \(ToolbarRenderer.wordWrapCheckboxHTML)
-        \(ToolbarRenderer.html(showPreviewToggle: false, showWordWrapToggle: true))
         <div id="ql-content">
+        \(ToolbarRenderer.wordWrapOverlayHTML)
         <pre><code>\(codeHTML)</code></pre>
         </div>
         </body>

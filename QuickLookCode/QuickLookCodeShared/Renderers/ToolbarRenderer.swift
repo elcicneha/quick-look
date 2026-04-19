@@ -2,35 +2,45 @@
 //  ToolbarRenderer.swift
 //  QuickLookCodeShared
 //
-//  Generates the native-looking toolbar injected at the top of every
-//  Quick Look preview. The toolbar occupies its own flex row so it never
-//  overlaps the scrollable content area below it.
+//  Generates the UI chrome injected into every Quick Look preview:
+//    • Markdown pages get a top toolbar containing the Preview/Code pill.
+//    • The word-wrap toggle is a fixed-position overlay pinned to the
+//      top-right edge of the viewport — it sits over the content, not
+//      inside the toolbar.
 //
 //  Toggle mechanism: CSS-only via hidden radio inputs + the general sibling
 //  selector (~). Quick Look's WebView has JavaScript disabled, so all
 //  interactivity must be driven by CSS :checked state.
 //
-//  Required body structure for markdown (showPreviewToggle: true):
+//  The wrap overlay label is placed *inside* the content container so a
+//  single `top: 6px; right: 6px` rule anchors it correctly in both cases —
+//  no per-page offset needed. In markdown, the label nests inside
+//  `#ql-view-code`, which means it naturally hides in preview mode (that
+//  subtree is `display: none`) and reappears in code-view mode.
+//
+//  Required body structure for markdown:
 //
 //    <body>
-//      <!-- 1. Radio/checkbox inputs FIRST — siblings of toolbar and content -->
-//      [ToolbarRenderer.toggleInputsHTML]
-//      [ToolbarRenderer.wordWrapCheckboxHTML]
-//      <!-- 2. Toolbar -->
-//      [ToolbarRenderer.html(showPreviewToggle: true, showWordWrapToggle: true)]
-//      <!-- 3. Scrollable content -->
+//      [ToolbarRenderer.toggleInputsHTML]       <!-- radios -->
+//      [ToolbarRenderer.wordWrapCheckboxHTML]   <!-- checkbox -->
+//      [ToolbarRenderer.toolbarHTML]            <!-- pill -->
 //      <div id="ql-content">
 //        <div id="ql-view-preview">…</div>
-//        <div id="ql-view-code">…</div>
+//        <div id="ql-view-code">
+//          [ToolbarRenderer.wordWrapOverlayHTML]
+//          …
+//        </div>
 //      </div>
 //    </body>
 //
-//  Required body structure for code files (showPreviewToggle: false):
+//  Required body structure for code files:
 //
 //    <body>
 //      [ToolbarRenderer.wordWrapCheckboxHTML]
-//      [ToolbarRenderer.html(showPreviewToggle: false, showWordWrapToggle: true)]
-//      <div id="ql-content">…</div>
+//      <div id="ql-content">
+//        [ToolbarRenderer.wordWrapOverlayHTML]
+//        …
+//      </div>
 //    </body>
 //
 
@@ -75,10 +85,6 @@ public enum ToolbarRenderer {
             text-indent: calc(-1 * var(--line-indent, 0ch));
         }
 
-        /* Hide wrap button in markdown preview mode; rule never fires on
-           plain code pages because #ql-radio-preview doesn't exist there. */
-        #ql-radio-preview:checked ~ #ql-toolbar .ql-wrap-btn { display: none; }
-
         /* ── Toolbar ──────────────────────────────────────────────────── */
         #ql-toolbar {
             flex-shrink: 0;
@@ -95,7 +101,9 @@ public enum ToolbarRenderer {
         #ql-content {
             flex: 1;
             overflow: auto;
+            position: relative;  /* positioning context for .ql-wrap-btn */
         }
+        #ql-view-code { position: relative; }
 
         /* ── Pill / segmented control ─────────────────────────────────── */
         .ql-pill {
@@ -142,29 +150,47 @@ public enum ToolbarRenderer {
             color: rgba(255, 255, 255, 0.7);
         }
 
-        /* ── Wrap button ──────────────────────────────────────────────── */
+        /* ── Wrap button (fixed overlay, top-right edge) ──────────────── */
+        /* The button is meant to read as a floating control that sits above
+           the code — NOT as a piece of the page. Elevation comes from:
+             • a bg distinctly brighter (dark) / cleaner (light) than typical
+               code backgrounds, so it never blends in
+             • a drop shadow
+             • a visible border edge
+           Dark vs light palette is chosen by the active code theme's isDark
+           flag (see ToolbarRenderer.wrapColorVariables). */
         .ql-wrap-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            z-index: 10;
             display: inline-flex;
             align-items: center;
-            background: transparent;
-            color: rgba(255, 255, 255, 0.75);
+            background: var(--wrap-bg);
+            color: var(--wrap-fg);
             font-size: 13px;
             font-weight: 400;
-            padding: 0px 4px;
+            padding: 0px 5px;
             border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--wrap-border);
+            box-shadow: var(--wrap-shadow);
             cursor: pointer;
             font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
             letter-spacing: 0.01em;
             user-select: none;
         }
         .ql-wrap-btn:hover {
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--wrap-bg-hover);
+            box-shadow: var(--wrap-shadow-hover);
         }
-        #ql-wrap:checked ~ #ql-toolbar .ql-wrap-btn {
-            background: rgba(10, 132, 255, 0.1);
-            color: #0a84ff;
-            border-color: rgba(10, 132, 255, 0.4);
+        /* Checked state — :has() is used because, in markdown, the label
+           lives inside #ql-view-code and is no longer a DOM sibling of the
+           #ql-wrap checkbox, so the old `#ql-wrap:checked ~ .ql-wrap-btn`
+           sibling selector wouldn't reach it. */
+        body:has(#ql-wrap:checked) .ql-wrap-btn {
+            background: var(--wrap-bg-checked);
+            color: var(--wrap-fg-checked);
+            border-color: var(--wrap-border-checked);
         }
 
         /* ── Light mode ───────────────────────────────────────────────── */
@@ -196,19 +222,6 @@ public enum ToolbarRenderer {
                 background: rgba(0, 0, 0, 0.05);
                 color: rgba(0, 0, 0, 0.6);
             }
-            .ql-wrap-btn {
-                background: transparent;
-                color: rgba(0, 0, 0, 0.6);
-                border-color: rgba(0, 0, 0, 0.1);
-            }
-            .ql-wrap-btn:hover {
-                background: rgba(0, 0, 0, 0.05);
-            }
-            #ql-wrap:checked ~ #ql-toolbar .ql-wrap-btn {
-                background: rgba(0, 122, 255, 0.1);
-                color: #007aff;
-                border-color: rgba(0, 122, 255, 0.4);
-            }
         }
 
         /* ── Narrow viewport (Column View preview pane) ───────────────── */
@@ -217,6 +230,7 @@ public enum ToolbarRenderer {
         @media (max-width: 480px) {
             html { zoom: 0.5; }
             #ql-toolbar { display: none; }
+            .ql-wrap-btn { display: none; }
         }
         """
 
@@ -224,38 +238,77 @@ public enum ToolbarRenderer {
 
     /// Two hidden radio inputs that power the CSS-only view toggle.
     /// Must appear before `#ql-toolbar` and `#ql-content` in `<body>` so the
-    /// `~` sibling selector can reach them.
-    /// Only inject this for pages that use `showPreviewToggle: true`.
+    /// `~` sibling selector can reach them. Markdown only.
     public static let toggleInputsHTML = """
         <input type="radio" name="ql-view" id="ql-radio-preview" checked>
         <input type="radio" name="ql-view" id="ql-radio-code">
         """
 
     /// Hidden checkbox that powers the CSS-only word-wrap toggle.
-    /// Must appear before `#ql-toolbar` and `#ql-content` in `<body>`.
-    /// Inject this for all pages that use `showWordWrapToggle: true`.
+    /// Must appear before `.ql-wrap-btn` and `#ql-content` in `<body>`.
     public static let wordWrapCheckboxHTML =
         "<input type=\"checkbox\" id=\"ql-wrap\">"
 
-    /// The toolbar `<div>`.
-    /// - `showPreviewToggle`: pass `true` for markdown files.
-    /// - `showWordWrapToggle`: pass `true` to show the word-wrap button.
-    public static func html(showPreviewToggle: Bool, showWordWrapToggle: Bool = false) -> String {
-        var left = ""
-        var right = ""
-        if showWordWrapToggle {
-            left = "<label for=\"ql-wrap\" class=\"ql-wrap-btn\">Wrap</label>"
+    /// Fixed-position wrap button pinned to the top-right of the viewport.
+    /// Place after `wordWrapCheckboxHTML` so the `~` selector can style it.
+    public static let wordWrapOverlayHTML =
+        "<label for=\"ql-wrap\" class=\"ql-wrap-btn\">Wrap</label>"
+
+    /// The top toolbar with the Preview/Code pill. Markdown only.
+    public static let toolbarHTML = """
+        <div id="ql-toolbar">
+          <div class="ql-pill" role="group" aria-label="View mode">
+            <label for="ql-radio-preview" id="ql-btn-preview">Preview</label>
+            <label for="ql-radio-code" id="ql-btn-code">Code</label>
+          </div>
+        </div>
+        """
+
+    // MARK: - Theme-driven wrap overlay colors
+
+    /// Returns the wrap overlay's `--wrap-*` CSS custom properties. The
+    /// active code theme's `isDark` flag picks between the dark and light
+    /// palettes — the palettes themselves are fixed. Embed inside a
+    /// `:root { … }` (or `body { … }`) rule so the CSS in
+    /// `ToolbarRenderer.css` can resolve `var(--wrap-*)`.
+    public static func wrapColorVariables(for theme: ThemeData) -> String {
+        let vars: [String]
+        if theme.isDark {
+            vars = [
+                // Lifted well above typical dark code backgrounds (≈ rgb 20–40)
+                // so the overlay never blends in. Checked state uses a
+                // subtle blue tint so the accent-blue text stays readable.
+                "--wrap-bg:rgb(68,68,72)",
+                "--wrap-bg-hover:rgb(84,84,88)",
+                "--wrap-bg-checked:rgb(26,48,78)",
+                "--wrap-fg:rgb(225,225,225)",
+                "--wrap-fg-checked:#0a84ff",
+                "--wrap-border:rgb(96,96,100)",
+                "--wrap-border-checked:rgb(40,100,170)",
+                // Subtle white rim + soft dark seat below — black-only drops
+                // disappear against dark surfaces, so we add a hairline light
+                // rim for elevation. Hover bumps both.
+                "--wrap-shadow:0 0 0 1px rgba(255,255,255,0.06), 0 3px 12px rgba(0,0,0,0.5)",
+                "--wrap-shadow-hover:0 0 0 1px rgba(255,255,255,0.1), 0 5px 18px rgba(0,0,0,0.6)"
+            ]
+        } else {
+            vars = [
+                // Near-white tile with a soft drop shadow — on light code
+                // backgrounds the shadow does the lifting, not bg contrast.
+                // Checked = subtle blue tint + accent-blue text.
+                "--wrap-bg:rgb(252,252,253)",
+                "--wrap-bg-hover:rgb(242,242,244)",
+                "--wrap-bg-checked:rgb(222,234,252)",
+                "--wrap-fg:rgb(64,64,64)",
+                "--wrap-fg-checked:#007aff",
+                "--wrap-border:rgb(210,210,214)",
+                "--wrap-border-checked:rgb(141,190,243)",
+                // Whisper-soft: two layered, low-opacity drops. Just enough
+                // to separate the tile from the page without visible smudge.
+                "--wrap-shadow:0 1px 2px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.06)",
+                "--wrap-shadow-hover:0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.08)"
+            ]
         }
-        if showPreviewToggle {
-            right = """
-                <div class="ql-pill" role="group" aria-label="View mode">
-                  <label for="ql-radio-preview" id="ql-btn-preview">Preview</label>
-                  <label for="ql-radio-code" id="ql-btn-code">Code</label>
-                </div>
-                """
-        }
-        // Both controls are right-aligned by the toolbar's justify-content: flex-end.
-        // Wrap sits immediately left of the view-mode pill with the toolbar's 8px gap.
-        return "<div id=\"ql-toolbar\">\(left)\(right)</div>"
+        return vars.joined(separator: ";")
     }
 }

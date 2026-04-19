@@ -12,25 +12,35 @@ macOS uses both Info.plist keys on different surfaces: `CFBundleDisplayName` win
 
 ## Build & Test Commands
 
-```bash
-# Build from command line
-xcodebuild -project QuickLookCode/QuickLookCode.xcodeproj -scheme QuickLookCode -configuration Debug build
+**Dev iteration loop — run this exact sequence every time you want to test a change:**
 
-# Install to /Applications (required for proper Quick Look / LS registration)
+```bash
+DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" \
+  xcodebuild -project QuickLookCode/QuickLookCode.xcodeproj \
+             -scheme QuickLookCode \
+             -configuration Debug build
+
 cp -R ~/Library/Developer/Xcode/DerivedData/QuickLookCode-*/Build/Products/Debug/Peekaboo.app /Applications/
 
+killall Peekaboo 2>/dev/null; qlmanage -r && killall -HUP Finder
+```
+
+Why each step matters:
+- **`DEVELOPER_DIR=...`** — forces `xcodebuild` to use full Xcode, not Command Line Tools. Without this, the build fails on a fresh shell with "xcodebuild requires Xcode". Always include it.
+- **`cp -R .../Peekaboo.app /Applications/`** — the extension *must* live under `/Applications/` (not DerivedData) for LaunchServices to register the Quick Look plugin. Running from DerivedData silently fails to hook into Finder.
+- **`killall Peekaboo; qlmanage -r; killall -HUP Finder`** — kills a running host app so it picks up the new binary, asks Quick Look to re-scan plugins, forces Finder to reload so the next Space-press uses the new extension. Omit any one and you'll be debugging yesterday's build.
+
+**Other commands:**
+
+```bash
 # Test the extension on a file
 qlmanage -p path/to/file.swift
-
-# Reload the extension after changes (run both)
-qlmanage -r
-killall -HUP Finder
 
 # Check the extension is registered
 pluginkit -m -v | grep quicklook
 
-# Check extension logs
-log stream --predicate 'subsystem contains "quicklookcode"' --level debug
+# Check extension logs (our code NSLogs under the [QuickLookCode] prefix)
+log stream --predicate 'eventMessage CONTAINS "[QuickLookCode]"' --level default
 
 # Rebuild the JS tokenizer bundle (after editing tokenizer/src/tokenizer-jsc.js)
 cd tokenizer && pnpm run build
@@ -86,19 +96,21 @@ IDELocator.preferred → IDEInfo (app URL, settings URL, extension paths)
 
 ### Key Constraints
 
-**Sandbox**: Both app and extension run sandboxed. Read access is granted via entitlement exceptions to:
-- `/Applications/` (VS Code, Antigravity)
-- `~/Applications/`
-- `~/Library/Application Support/Code/` and `~/Library/Application Support/Antigravity/`
-- `~/.vscode/` and `~/.antigravity/`
+**Sandbox**: Both app and extension run sandboxed. Read access to VS Code / Antigravity install locations and user config dirs is granted via a single entitlement exception list — `com.apple.security.temporary-exception.files.absolute-path.read-only` — containing `/Applications/` and `/Users/`.
 
-Any new file paths the extension needs to read must be added to both `QuickLookCode.entitlements` and `QuickLookCodeExtension.entitlements`.
+**Why `/Users/` and not `home-relative-path` exceptions**: Apple's `com.apple.security.temporary-exception.files.home-relative-path.read-only` silently resolves paths against the *sandbox container home* (`~/Library/Containers/<bundle-id>/Data/`), not the user's real home — so `Library/Application Support/Code/` in that key grants access to a path that doesn't exist and the kernel denies the real read. The absolute-path `/Users/` prefix is resolved literally and covers every user's real home subtree. Do not switch back to home-relative paths.
+
+**Why `getpwuid(getuid())->pw_dir` in `IDELocator.realHomeDirectory()`**: inside a sandboxed process, all Foundation home APIs (`FileManager.default.homeDirectoryForCurrentUser`, `NSHomeDirectory()`, `NSHomeDirectoryForUser(NSUserName())`) return the container path. The direct `getpwuid` syscall reads from Open Directory and bypasses the sandbox remap, returning `/Users/<username>/`. Do not replace this with a Foundation API — paths constructed from Foundation home will read from the sandbox container (which is empty) even though the entitlement would allow access to the real location.
+
+Any new file paths the extension needs to read must be added to both `QuickLookCode.entitlements` and `QuickLookCodeExtension.entitlements`, and constructed in code from `realHomeDirectory()` rather than `FileManager.default.homeDirectoryForCurrentUser`.
 
 **App Group**: `group.com.nehagupta.quicklookcode` — used for shared UserDefaults **and the disk cache** between app and extension. The cache lives at `<AppGroupContainer>/Library/Caches/quicklookcode/` and contains `manifest.json`, `ide.json`, `theme.json`, and `grammar-index.json`.
 
 ### IDE Abstraction
 
-The project supports both **VS Code** and **Antigravity** (a VS Code fork). `IDEInfo` holds all paths for a given IDE. `IDELocator.preferred` returns whichever is found first. All downstream code (GrammarLoader, ThemeLoader) takes an `IDEInfo` — never hardcode VS Code paths.
+The project supports both **VS Code** and **Antigravity** (a VS Code fork). `IDEInfo` holds all paths for a given IDE. `IDELocator.preferred` returns the user's picker choice (stored in shared App Group `UserDefaults` under the `selectedIDE` key — visible to both host app and extension) when that IDE is installed; otherwise the first IDE found in catalog order. The host app's `ContentView` shows the picker only when ≥2 IDEs are installed. All downstream code (GrammarLoader, ThemeLoader) takes an `IDEInfo` — never hardcode VS Code paths.
+
+**Theme dark/light classification** (`ThemeLoader.classifyIsDark`): prefers the theme JSON's own `type` field if present, otherwise falls back to the `uiTheme` field from the extension's `package.json` contribution (`"vs"`/`"hc-light"` = light, everything else = dark). VS Code's built-in themes (e.g. `light_modern.json`) omit `type` entirely and rely on `uiTheme` — a naive `type ?? "dark"` default would mis-classify every one of them as dark.
 
 ### Token Scope Matching
 
@@ -122,7 +134,11 @@ L1 — Per-render work (always runs)
      File read, tokenizeLine2, HTML string build, WKWebView paint.
 ```
 
-**CacheManager** (`Cache/CacheManager.swift`) orchestrates bootstrap and refresh. Call `CacheManager.bootstrap()` before the first render (idempotent). The host app's **Refresh** button calls `CacheManager.refresh()` to force a full rebuild — use this after changing the IDE theme.
+**CacheManager** (`Cache/CacheManager.swift`) orchestrates bootstrap and refresh. Call `CacheManager.bootstrap()` before every render — the hot path is a single atomic boolean check (`_loadedCacheVersion != nil && !_needsReload`), no disk I/O. The host app's **Refresh** button calls `CacheManager.refresh()` to force a full rebuild — use this after changing the IDE theme.
+
+**Cross-process invalidation via Darwin notifications**: the host app and Quick Look extension are separate processes with separate L2 singletons. `CacheManager.refresh()` rebuilds L3 locally, then posts a Darwin notification (`CFNotificationCenterGetDarwinNotifyCenter`). Every process that called `bootstrap()` installs a `CFNotificationCenterAddObserver` on first call; the handler flips `_needsReload` so the next `bootstrap()` swaps L2 from the fresh L3 with one `loadFromDisk()`, then returns to the fast path. No polling, microsecond latency.
+
+**Notification name must be app-group-prefixed**: sandboxed macOS processes silently drop Darwin notifications whose name is not prefixed with an app-group identifier the process belongs to. The constant `CacheManager.cacheUpdatedNotification` is built as `"\(DiskCacheSchema.appGroup).cache-refreshed"` — do not rename to something outside the `group.com.nehagupta.quicklookcode.*` namespace or cross-process invalidation will break silently.
 
 **TokenizerEngine** (`Cache/TokenizerEngine.swift`) is a Swift `actor` that owns one `JSContext` for the process lifetime. `tokenizer-jsc.js` is evaluated once; oniguruma is bridged once. `initGrammar` is called only when language or theme changes between calls — browsing a folder of `.py` files hits `doTokenize` directly. Markdown code blocks all share the same warm context.
 
@@ -143,7 +159,20 @@ SourceCodeRenderer.render(fileURL:grammarData:theme:)
 
 The JS bundle (`tokenizer-jsc.js`) is built via esbuild from `tokenizer/src/tokenizer-jsc.js`. The build output goes directly to `QuickLookCode/QuickLookCodeShared/Resources/tokenizer-jsc.js` — no manual copy needed. Run `pnpm run build` inside `tokenizer/` after changing JS source.
 
-`HTMLRenderer` composes the final document and delegates the file-info header/toolbar (filename, icon, language badge) to `ToolbarRenderer`. The toolbar is hidden / scaled down in the Finder column-view preview and shown at full size in the dedicated Quick Look window.
+`HTMLRenderer` composes the final document and uses `ToolbarRenderer` for the in-preview chrome.
+
+### In-preview chrome (ToolbarRenderer)
+
+`ToolbarRenderer` owns the two UI affordances that live inside the WKWebView:
+
+- **Preview/Code pill** — markdown only. Sits in `#ql-toolbar` (a flex bar at the top of the page, emitted only by `MarkdownRenderer`). Drives the view toggle via hidden radio inputs + `:checked` sibling selectors.
+- **Wrap overlay** — a floating `<label for="ql-wrap">` button, fed by a hidden checkbox. It uses `position: absolute; top: 6px; right: 6px` and is placed *inside* the content container (`#ql-content` for code files, `#ql-view-code` for markdown). One rule, two contexts — do not re-introduce per-context `top` overrides. In markdown, nesting inside `#ql-view-code` means the label inherits that subtree's `display: none` during preview mode, so it's only visible in code view without any extra CSS.
+
+Because the label is no longer a DOM sibling of `#ql-wrap` (the checkbox stays at body level so `#ql-wrap:checked ~ #ql-content .line` still applies wrap styling), the checked-state rule uses `body:has(#ql-wrap:checked) .ql-wrap-btn { … }`. `:has()` is required — don't revert to `~`.
+
+The wrap overlay's colors come from CSS custom properties (`--wrap-bg`, `--wrap-fg`, `--wrap-bg-checked`, `--wrap-shadow`, etc.) set per-render by `ToolbarRenderer.wrapColorVariables(for: theme)`, which both renderers inject into a `:root { … }` rule. The theme's `isDark` flag **only** picks between two fixed palettes — the palette values are *not* mixed from `theme.background` / `theme.foreground`. Do not re-introduce color mixing; that was tried and rejected.
+
+The toolbar is hidden / scaled down in the Finder column-view preview and shown at full size in the dedicated Quick Look window.
 
 **Xcode 16+ `fileSystemSynchronizedGroups`**: The project uses this feature, so adding or removing source files on disk is sufficient — no `project.pbxproj` edits are needed.
 

@@ -376,6 +376,7 @@ private extension MarkdownRenderer {
         <title>\(escapedTitle)</title>
         <style>
         \(ToolbarRenderer.css)
+        :root { \(ToolbarRenderer.wrapColorVariables(for: theme)) }
         \(css)
         .line { display: block; min-height: 1.6em; white-space: pre; }
         #ql-radio-code:checked ~ #ql-content { background: \(theme.background); }
@@ -385,7 +386,7 @@ private extension MarkdownRenderer {
         <body>
         \(ToolbarRenderer.toggleInputsHTML)
         \(ToolbarRenderer.wordWrapCheckboxHTML)
-        \(ToolbarRenderer.html(showPreviewToggle: true, showWordWrapToggle: true))
+        \(ToolbarRenderer.toolbarHTML)
         <div id="ql-content">
           <div id="ql-view-preview">
             <div class="markdown-body">
@@ -393,6 +394,7 @@ private extension MarkdownRenderer {
             </div>
           </div>
           <div id="ql-view-code">
+          \(ToolbarRenderer.wordWrapOverlayHTML)
           \(sourceHTML)
           </div>
         </div>
