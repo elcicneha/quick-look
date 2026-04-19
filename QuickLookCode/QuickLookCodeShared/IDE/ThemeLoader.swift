@@ -82,7 +82,7 @@ public enum ThemeLoader {
         //    non-conforming themes).
         if let themeName = readActiveThemeName(settingsURL: ide.settingsURL) {
             if let contribution = resolveTheme(named: themeName, in: registry) {
-                return try parseTheme(at: contribution.path, fallbackName: contribution.label)
+                return try parseTheme(contribution: contribution)
             }
             throw LoadError.themeNotResolvable(themeName)
         }
@@ -92,7 +92,7 @@ public enum ThemeLoader {
         //    contribution in the IDE's own defaults) — no hardcoded theme name.
         let defaults = registry.filter { isThemeDefaults($0.path) }
         if let fallback = defaults.first(where: { $0.uiTheme == "vs-dark" }) ?? defaults.first {
-            return try parseTheme(at: fallback.path, fallbackName: fallback.label)
+            return try parseTheme(contribution: fallback)
         }
 
         throw LoadError.noThemesFound
@@ -258,6 +258,15 @@ public enum ThemeLoader {
         return nil
     }
 
+    private static func classifyIsDark(themeType: String?, uiTheme: String) -> Bool {
+        if let t = themeType?.lowercased() {
+            if t == "light" { return false }
+            if t == "dark"  { return true  }
+        }
+        // VS Code classification: "vs"/"hc-light" are light, everything else dark.
+        return !(uiTheme == "vs" || uiTheme == "hc-light")
+    }
+
     private static func readThemeNameField(at url: URL) -> String? {
         guard
             let data = try? Data(contentsOf: url),
@@ -269,15 +278,23 @@ public enum ThemeLoader {
 
     // MARK: - Parsing
 
-    private static func parseTheme(at url: URL, fallbackName: String) throws -> ThemeData {
+    /// Parses a theme file, classifying light vs dark via (in order):
+    /// 1. The theme JSON's own `type` field, if present.
+    /// 2. The registered `uiTheme` from the extension's package.json — VS Code's
+    ///    built-in themes (e.g. `light_modern.json`) often omit `type` entirely and
+    ///    rely on `uiTheme` being `"vs"`/`"vs-dark"`/`"hc-light"`/`"hc-black"`.
+    private static func parseTheme(contribution: ThemeContribution) throws -> ThemeData {
+        let url = contribution.path
         let data = try Data(contentsOf: url)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw LoadError.parseError("Root is not a JSON object")
         }
 
-        let name = (json["name"] as? String) ?? fallbackName
-        let themeType = (json["type"] as? String) ?? "dark"
-        let isDark = themeType.lowercased() != "light"
+        let name = (json["name"] as? String) ?? contribution.label
+        let isDark = classifyIsDark(
+            themeType: json["type"] as? String,
+            uiTheme: contribution.uiTheme
+        )
 
         let colors = json["colors"] as? [String: String] ?? [:]
         let background = colors["editor.background"] ?? (isDark ? "#1e1e1e" : "#ffffff")

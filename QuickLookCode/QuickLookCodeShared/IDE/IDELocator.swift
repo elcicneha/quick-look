@@ -41,6 +41,27 @@ public enum IDELocator {
     /// Set by CacheManager.bootstrap(); avoids filesystem scans on the hot path.
     static var _cached: IDEInfo?
 
+    // MARK: - User preference
+
+    private static let selectedIDEKey = "selectedIDE"
+
+    /// Name of the IDE the user picked in the host app's picker, or nil for auto.
+    /// Stored in App Group UserDefaults so the Quick Look extension sees the same value.
+    public static var selectedIDEName: String? {
+        get { sharedDefaults?.string(forKey: selectedIDEKey) }
+        set {
+            if let v = newValue, !v.isEmpty {
+                sharedDefaults?.set(v, forKey: selectedIDEKey)
+            } else {
+                sharedDefaults?.removeObject(forKey: selectedIDEKey)
+            }
+        }
+    }
+
+    private static var sharedDefaults: UserDefaults? {
+        UserDefaults(suiteName: DiskCacheSchema.appGroup)
+    }
+
     // MARK: - Public API
 
     /// Returns all IDEs found on the system, in catalog order.
@@ -86,11 +107,19 @@ public enum IDELocator {
         return found
     }
 
-    /// The first (preferred) installed IDE, or nil if none found.
+    /// The first (preferred) installed IDE, or nil if none found. Honors the user's
+    /// picker selection (`selectedIDEName`) when that IDE is installed; otherwise falls
+    /// back to the first installed IDE in catalog order.
     /// Returns the in-memory cached value if CacheManager has bootstrapped; falls back
     /// to a live filesystem scan otherwise.
     public static var preferred: IDEInfo? {
-        _cached ?? installedIDEs().first
+        if let cached = _cached { return cached }
+        let all = installedIDEs()
+        if let name = selectedIDEName,
+           let match = all.first(where: { $0.name == name }) {
+            return match
+        }
+        return all.first
     }
 
     // MARK: - Helpers

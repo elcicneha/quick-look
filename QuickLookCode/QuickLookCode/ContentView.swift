@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var status: StatusInfo = .loading
     @State private var lastRefreshed: Date? = nil
     @State private var isRefreshing = false
+    @State private var installedIDEs: [IDEInfo] = []
+    @State private var selectedIDEName: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,7 +45,18 @@ struct ContentView: View {
                     .font(.callout)
 
             case .ready(let info):
-                LabeledContent("IDE", value: info.ideName)
+                if installedIDEs.count > 1 {
+                    Picker("IDE", selection: $selectedIDEName) {
+                        ForEach(installedIDEs, id: \.name) { ide in
+                            Text(ide.name).tag(ide.name)
+                        }
+                    }
+                    .onChange(of: selectedIDEName) { newValue in
+                        selectIDE(newValue)
+                    }
+                } else {
+                    LabeledContent("IDE", value: info.ideName)
+                }
                 LabeledContent("Path", value: info.idePath)
                 LabeledContent("Active Theme", value: info.themeName)
                 LabeledContent("Theme Type", value: info.isDark ? "Dark" : "Light")
@@ -85,11 +98,13 @@ struct ContentView: View {
         }.value
 
         lastRefreshed = CacheManager.lastBuiltAt
+        installedIDEs = IDELocator.installedIDEs()
 
         guard let ide = IDELocator.preferred else {
             status = .noIDE
             return
         }
+        selectedIDEName = ide.name
         do {
             let theme = try ThemeLoader.loadActiveTheme(from: ide)
             status = .ready(ReadyInfo(
@@ -116,6 +131,14 @@ struct ContentView: View {
             lastRefreshed = CacheManager.lastBuiltAt
             await loadStatus()
         }
+    }
+
+    /// Persists the user's IDE pick in App Group defaults and rebuilds the cache so
+    /// the new IDE's theme / grammars take effect in both the host app and the extension.
+    private func selectIDE(_ name: String) {
+        guard name != (IDELocator.selectedIDEName ?? "") else { return }
+        IDELocator.selectedIDEName = name
+        refresh()
     }
 
     // MARK: - State

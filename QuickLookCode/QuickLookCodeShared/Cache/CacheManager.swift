@@ -281,8 +281,8 @@ public enum CacheManager {
         guard let dir = cacheDir else { return false }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        // 1. Detect IDE.
-        guard let ide = IDELocator.installedIDEs().first else {
+        // 1. Detect IDE (honors the user's picker selection via IDELocator.preferred).
+        guard let ide = IDELocator.preferred else {
             NSLog("[QuickLookCode] CacheManager: no IDE found, cache not built")
             return false
         }
