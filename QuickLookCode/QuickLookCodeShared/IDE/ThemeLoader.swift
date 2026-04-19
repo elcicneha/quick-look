@@ -21,6 +21,19 @@ public struct TokenColorRule {
     public let fontStyle: String?
 }
 
+/// A theme as registered by a VS Code / Antigravity extension — the authoritative
+/// mapping between the id stored in `workbench.colorTheme` and the theme JSON file.
+struct ThemeContribution {
+    /// Identifier stored in `workbench.colorTheme` when the user picks this theme.
+    let id: String
+    /// Human-readable name, NLS-resolved if possible (otherwise the raw label).
+    let label: String
+    /// Absolute path to the theme JSON file.
+    let path: URL
+    /// "vs" (light), "vs-dark" (dark), "hc-black", "hc-light".
+    let uiTheme: String
+}
+
 // MARK: - Loader
 
 public enum ThemeLoader {
@@ -34,23 +47,21 @@ public enum ThemeLoader {
     static var _cachedSerializedTheme: String?
 
     public enum LoadError: LocalizedError {
-        case settingsNotFound
-        case noThemeKey
-        case themeFileNotFound(String)
+        case noThemesFound
+        case themeNotResolvable(String)
         case parseError(String)
 
         public var errorDescription: String? {
             switch self {
-            case .settingsNotFound:    return "IDE settings.json not found"
-            case .noThemeKey:          return "No workbench.colorTheme in settings.json"
-            case .themeFileNotFound(let name): return "Theme file not found for '\(name)'"
-            case .parseError(let msg): return "Theme parse error: \(msg)"
+            case .noThemesFound:
+                return "No themes found in the IDE's installed extensions"
+            case .themeNotResolvable(let name):
+                return "Could not resolve theme '\(name)' to a theme file"
+            case .parseError(let msg):
+                return "Theme parse error: \(msg)"
             }
         }
     }
-
-    /// The theme name used when the user has not customised their theme in VS Code / Antigravity.
-    public static let defaultThemeName = "Default Dark Modern"
 
     // MARK: - Public API
 
@@ -64,118 +75,196 @@ public enum ThemeLoader {
 
     /// Full disk load — always reads from the filesystem. Used by CacheManager at build time.
     static func loadActiveThemeFromDisk(from ide: IDEInfo) throws -> ThemeData {
-        let themeName = readActiveThemeName(settingsURL: ide.settingsURL)
+        let registry = loadThemeRegistry(from: ide)
 
-        // Try the user's configured (or default) theme first.
-        if let url = try? findThemeFile(named: themeName, in: ide) {
-            return try parseTheme(at: url, fallbackName: themeName)
+        // 1. If the user has set workbench.colorTheme, resolve that name via the
+        //    extension registry (id, label, or filename/JSON-name fallback for
+        //    non-conforming themes).
+        if let themeName = readActiveThemeName(settingsURL: ide.settingsURL) {
+            if let contribution = resolveTheme(named: themeName, in: registry) {
+                return try parseTheme(at: contribution.path, fallbackName: contribution.label)
+            }
+            throw LoadError.themeNotResolvable(themeName)
         }
 
-        // Theme not found by name — pick any theme that actually exists in the built-in
-        // extensions. This handles older VS Code versions where the theme name shipped
-        // with the app differs from the name stored in settings (or from our default).
-        if let url = findAnyTheme(in: ide.builtinExtensionsURL) {
-            return try parseTheme(at: url, fallbackName: themeName)
+        // 2. No preference set: pick the first dark theme from the IDE's bundled
+        //    theme-defaults extension. The choice is structural (first vs-dark
+        //    contribution in the IDE's own defaults) — no hardcoded theme name.
+        let defaults = registry.filter { isThemeDefaults($0.path) }
+        if let fallback = defaults.first(where: { $0.uiTheme == "vs-dark" }) ?? defaults.first {
+            return try parseTheme(at: fallback.path, fallbackName: fallback.label)
         }
 
-        throw LoadError.themeFileNotFound(themeName)
+        throw LoadError.noThemesFound
     }
 
-    // MARK: - Steps
+    // MARK: - Settings
 
-    static func readActiveThemeName(settingsURL: URL) -> String {
-        guard
-            FileManager.default.fileExists(atPath: settingsURL.path),
-            let data = try? Data(contentsOf: settingsURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let theme = json["workbench.colorTheme"] as? String,
-            !theme.isEmpty
-        else {
-            // No theme configured — use the IDE's out-of-the-box default.
-            return defaultThemeName
+    /// Returns the user's configured theme name, or nil if none is set.
+    /// Never returns a hardcoded default — callers must fall back structurally.
+    static func readActiveThemeName(settingsURL: URL) -> String? {
+        let path = settingsURL.path
+        guard FileManager.default.fileExists(atPath: path) else {
+            NSLog("[QuickLookCode] ThemeLoader: settings.json not found at %@", path)
+            return nil
         }
+        let data: Data
+        do {
+            data = try Data(contentsOf: settingsURL)
+        } catch {
+            NSLog("[QuickLookCode] ThemeLoader: cannot read settings.json at %@ (%@)",
+                  path, error.localizedDescription)
+            return nil
+        }
+        let json: [String: Any]
+        do {
+            guard let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                NSLog("[QuickLookCode] ThemeLoader: settings.json root is not an object")
+                return nil
+            }
+            json = parsed
+        } catch {
+            NSLog("[QuickLookCode] ThemeLoader: settings.json parse error (%@) — likely JSONC comments",
+                  error.localizedDescription)
+            return nil
+        }
+        guard let theme = json["workbench.colorTheme"] as? String, !theme.isEmpty else {
+            NSLog("[QuickLookCode] ThemeLoader: workbench.colorTheme missing or empty")
+            return nil
+        }
+        NSLog("[QuickLookCode] ThemeLoader: read active theme name = %@", theme)
         return theme
     }
 
-    static func findThemeFile(named themeName: String, in ide: IDEInfo) throws -> URL {
-        let searchRoots = [ide.builtinExtensionsURL, ide.userExtensionsURL]
-        for root in searchRoots {
-            if let url = searchThemes(in: root, matching: themeName) {
-                return url
-            }
+    // MARK: - Registry
+
+    /// Walks the IDE's built-in and user extension directories and returns all
+    /// theme contributions (by reading each extension's package.json).
+    static func loadThemeRegistry(from ide: IDEInfo) -> [ThemeContribution] {
+        var entries: [ThemeContribution] = []
+        for root in [ide.builtinExtensionsURL, ide.userExtensionsURL] {
+            entries += loadContributions(rootExtensionsDir: root)
         }
-        throw LoadError.themeFileNotFound(themeName)
+        return entries
     }
 
-    /// Returns the first dark theme file found anywhere in the given extensions directory,
-    /// or any theme file if no dark one is present.
-    private static func findAnyTheme(in root: URL) -> URL? {
+    private static func loadContributions(rootExtensionsDir: URL) -> [ThemeContribution] {
         let fm = FileManager.default
         guard let extensions = try? fm.contentsOfDirectory(
-            at: root,
+            at: rootExtensionsDir,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles
-        ) else { return nil }
+        ) else { return [] }
 
-        var anyTheme: URL? = nil
+        var entries: [ThemeContribution] = []
         for extDir in extensions {
-            let themesDir = extDir.appendingPathComponent("themes")
-            guard let themeFiles = try? fm.contentsOfDirectory(
-                at: themesDir,
-                includingPropertiesForKeys: nil,
-                options: .skipsHiddenFiles
-            ) else { continue }
-
-            for file in themeFiles where file.pathExtension == "json" {
-                if anyTheme == nil { anyTheme = file }
-                // Prefer a dark theme — check the `type` field in the JSON.
-                if let data = try? Data(contentsOf: file),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let type_ = json["type"] as? String,
-                   type_.lowercased() == "dark" {
-                    return file
-                }
-            }
+            entries += parseExtensionContributions(extDir: extDir)
         }
-        return anyTheme
+        return entries
     }
 
-    private static func searchThemes(in root: URL, matching themeName: String) -> URL? {
-        let fm = FileManager.default
-        guard let extensions = try? fm.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: .skipsHiddenFiles
-        ) else { return nil }
+    private static func parseExtensionContributions(extDir: URL) -> [ThemeContribution] {
+        let packageURL = extDir.appendingPathComponent("package.json")
+        guard
+            let data = try? Data(contentsOf: packageURL),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let contributes = root["contributes"] as? [String: Any],
+            let themes = contributes["themes"] as? [[String: Any]]
+        else { return [] }
 
-        for extDir in extensions {
-            let themesDir = extDir.appendingPathComponent("themes")
-            guard let themeFiles = try? fm.contentsOfDirectory(
-                at: themesDir,
-                includingPropertiesForKeys: nil,
-                options: .skipsHiddenFiles
-            ) else { continue }
+        let nls = loadNLS(extDir: extDir)
 
-            for file in themeFiles where file.pathExtension == "json" {
-                if matchesTheme(file: file, themeName: themeName) {
-                    return file
-                }
+        var entries: [ThemeContribution] = []
+        for theme in themes {
+            guard
+                let id = (theme["id"] as? String) ?? (theme["label"] as? String),
+                let relPath = theme["path"] as? String,
+                !relPath.isEmpty
+            else { continue }
+
+            let rawLabel = (theme["label"] as? String) ?? id
+            let label = resolveNLS(rawLabel, using: nls)
+            let uiTheme = (theme["uiTheme"] as? String) ?? "vs-dark"
+            let absPath = extDir.appendingPathComponent(relPath).standardizedFileURL
+
+            entries.append(ThemeContribution(
+                id: id,
+                label: label,
+                path: absPath,
+                uiTheme: uiTheme
+            ))
+        }
+        return entries
+    }
+
+    /// Reads an extension's package.nls.json (if present) for NLS placeholder resolution.
+    private static func loadNLS(extDir: URL) -> [String: String] {
+        let url = extDir.appendingPathComponent("package.nls.json")
+        guard
+            let data = try? Data(contentsOf: url),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        var out: [String: String] = [:]
+        for (k, v) in json {
+            if let s = v as? String { out[k] = s }
+        }
+        return out
+    }
+
+    /// Resolves a "%placeholder%" label against an NLS dictionary. Returns the input
+    /// unchanged if it isn't a placeholder or can't be resolved.
+    private static func resolveNLS(_ label: String, using nls: [String: String]) -> String {
+        guard label.hasPrefix("%"), label.hasSuffix("%"), label.count > 2 else {
+            return label
+        }
+        let key = String(label.dropFirst().dropLast())
+        return nls[key] ?? label
+    }
+
+    /// Path-based check that an entry lives inside the IDE's `theme-defaults` extension.
+    private static func isThemeDefaults(_ url: URL) -> Bool {
+        url.pathComponents.contains("theme-defaults")
+    }
+
+    // MARK: - Resolution
+
+    /// Tries multiple match strategies, in order of authoritativeness:
+    /// 1. Exact id match (what VS Code stores in settings)
+    /// 2. Label match (what the user sees in the picker)
+    /// 3. Filename stem match (legacy / non-conforming themes)
+    /// 4. Theme file's internal `name` field (same fallback)
+    private static func resolveTheme(
+        named themeName: String,
+        in registry: [ThemeContribution]
+    ) -> ThemeContribution? {
+        if let hit = registry.first(where: { $0.id.caseInsensitiveCompare(themeName) == .orderedSame }) {
+            return hit
+        }
+        if let hit = registry.first(where: { $0.label.caseInsensitiveCompare(themeName) == .orderedSame }) {
+            return hit
+        }
+        if let hit = registry.first(where: {
+            $0.path.deletingPathExtension().lastPathComponent
+                .caseInsensitiveCompare(themeName) == .orderedSame
+        }) {
+            return hit
+        }
+        for entry in registry {
+            if let name = readThemeNameField(at: entry.path),
+               name.caseInsensitiveCompare(themeName) == .orderedSame {
+                return entry
             }
         }
         return nil
     }
 
-    private static func matchesTheme(file: URL, themeName: String) -> Bool {
-        let stem = file.deletingPathExtension().lastPathComponent
-        if stem.caseInsensitiveCompare(themeName) == .orderedSame {
-            return true
-        }
+    private static func readThemeNameField(at url: URL) -> String? {
         guard
-            let data = try? Data(contentsOf: file),
+            let data = try? Data(contentsOf: url),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let name = json["name"] as? String
-        else { return false }
-        return name.caseInsensitiveCompare(themeName) == .orderedSame
+        else { return nil }
+        return name
     }
 
     // MARK: - Parsing

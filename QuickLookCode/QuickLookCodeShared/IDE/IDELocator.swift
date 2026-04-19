@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Darwin
 
 /// Finds VS Code–compatible IDEs installed on this machine.
 public enum IDELocator {
@@ -45,14 +46,20 @@ public enum IDELocator {
     /// Returns all IDEs found on the system, in catalog order.
     public static func installedIDEs() -> [IDEInfo] {
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
-        let appSupportBase = home.appendingPathComponent("Library/Application Support")
+        // In a sandboxed app, all Foundation home APIs (`FileManager.homeDirectoryForCurrentUser`,
+        // `NSHomeDirectory()`, even `NSHomeDirectoryForUser(NSUserName())`) are remapped to
+        // the container home `~/Library/Containers/<bundle-id>/Data/`. The `home-relative-path`
+        // entitlement exceptions, however, are resolved by the kernel against the user's REAL
+        // home directory — so to construct paths that match the granted exceptions we have to
+        // bypass Foundation and read `pw_dir` directly from the user record.
+        let realHome = URL(fileURLWithPath: realHomeDirectory(), isDirectory: true)
+        let appSupportBase = realHome.appendingPathComponent("Library/Application Support")
 
         var found: [IDEInfo] = []
 
         let searchBases: [URL] = [
             URL(fileURLWithPath: "/Applications"),
-            home.appendingPathComponent("Applications"),
+            realHome.appendingPathComponent("Applications"),
         ]
 
         for candidate in catalog {
@@ -60,7 +67,7 @@ public enum IDELocator {
                 continue
             }
 
-            let userExtensionsURL = home
+            let userExtensionsURL = realHome
                 .appendingPathComponent(candidate.userExtensionsDirName)
                 .appendingPathComponent("extensions", isDirectory: true)
 
@@ -87,6 +94,19 @@ public enum IDELocator {
     }
 
     // MARK: - Helpers
+
+    /// Returns the current user's real home directory (e.g. `/Users/nehagupta`) even inside
+    /// a sandboxed process where Foundation APIs return the container path. Uses `getpwuid`
+    /// which reads directly from Open Directory / the user record, bypassing the sandbox
+    /// remap. Falls back to `NSHomeDirectory()` on the extremely unlikely failure case.
+    private static func realHomeDirectory() -> String {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            let s = String(cString: dir)
+            if !s.isEmpty { return s }
+        }
+        NSLog("[QuickLookCode] IDELocator: getpwuid returned no home — falling back to NSHomeDirectory")
+        return NSHomeDirectory()
+    }
 
     private static func firstExisting(names: [String], in bases: [URL], fm: FileManager) -> URL? {
         for base in bases {
