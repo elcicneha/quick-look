@@ -156,16 +156,14 @@ public enum ToolbarRenderer {
         }
 
         /* ── Wrap button (fixed overlay, top-right edge) ──────────────── */
-        /* The button is meant to read as a floating control that sits above
-           the code — NOT as a piece of the page. Elevation comes from:
-             • a bg distinctly brighter (dark) / cleaner (light) than typical
-               code backgrounds, so it never blends in
-             • a drop shadow
-             • a visible border edge
+        /* position: fixed anchors to the viewport so the button doesn't
+           scroll with content. The element stays inside #ql-content /
+           #ql-view-code so that markdown's `display:none` subtree hides it
+           in preview mode without extra CSS.
            Dark vs light palette is chosen by the active code theme's isDark
            flag (see ToolbarRenderer.wrapColorVariables). */
         .ql-wrap-btn {
-            position: absolute;
+            position: fixed;
             top: 6px;
             right: 6px;
             z-index: 10;
@@ -197,6 +195,9 @@ public enum ToolbarRenderer {
             color: var(--wrap-fg-checked);
             border-color: var(--wrap-border-checked);
         }
+
+        /* Markdown pages have a toolbar (~32px tall); push the button below it. */
+        body:has(#ql-toolbar) .ql-wrap-btn { top: 40px; }
 
         /* ── Narrow viewport (Column View preview pane) ───────────────── */
         /* Shrink everything uniformly and drop the toolbar. Layout reflows
