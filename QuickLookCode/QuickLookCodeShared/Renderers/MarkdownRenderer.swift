@@ -339,10 +339,26 @@ private extension MarkdownRenderer {
 
         let grammarLoader = GrammarLoader(ide: ide)
         guard let grammarData = try? grammarLoader.grammarData(for: langInfo.grammarSearch) else { return plainFallback }
+
+        // Load grammars for every fenced language so vscode-textmate can highlight
+        // embedded code blocks with their own language colors in the Code view.
+        var siblingGrammars: [Data] = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+        var loadedScopes = Set<String>()
+        for lang in extractFencedLanguages(from: markdown) {
+            let fencedLangInfo = FileTypeRegistry.language(forCodeFenceTag: lang)
+            guard !loadedScopes.contains(fencedLangInfo.grammarSearch) else { continue }
+            loadedScopes.insert(fencedLangInfo.grammarSearch)
+            if let gData = try? grammarLoader.grammarData(for: fencedLangInfo.grammarSearch) {
+                siblingGrammars.append(gData)
+                siblingGrammars.append(contentsOf: grammarLoader.siblingGrammarData(for: fencedLangInfo.grammarSearch))
+            }
+        }
+
         guard let rawLines = try? await SourceCodeRenderer.tokenize(
             code: markdown,
             language: langInfo.grammarSearch,
             grammarData: grammarData,
+            siblingGrammars: siblingGrammars,
             theme: theme
         ) else { return plainFallback }
 
@@ -363,6 +379,22 @@ private extension MarkdownRenderer {
         return """
         <pre style="background:\(theme.background);color:\(theme.foreground);margin:0;padding:16px 20px;font-family:ui-monospace,'SF Mono',Menlo,Monaco,Consolas,'Courier New',monospace;font-size:13px;line-height:1.6"><code style="display:block">\(codeHTML)</code></pre>
         """
+    }
+
+    /// Returns the unique set of language tags from fenced code blocks (``` or ~~~).
+    static func extractFencedLanguages(from markdown: String) -> [String] {
+        let pattern = #"^(?:```|~~~)(\w\S*)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) else { return [] }
+        let ns = markdown as NSString
+        let matches = regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length))
+        var seen = Set<String>()
+        var result: [String] = []
+        for match in matches {
+            guard match.range(at: 1).location != NSNotFound else { continue }
+            let lang = ns.substring(with: match.range(at: 1)).lowercased()
+            if seen.insert(lang).inserted { result.append(lang) }
+        }
+        return result
     }
 
     static func makePlainBlock(code: String, lang: String, theme: ThemeData) -> String {
