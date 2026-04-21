@@ -48,7 +48,7 @@ class PreviewViewController: NSViewController, QLPreviewingController, WKNavigat
         webView.evaluateJavaScript("""
             (function(){
                 var qc = document.getElementById('ql-content');
-                var pre = qc && qc.querySelector('pre');
+                var pre = qc && qc.querySelector(':scope > pre');
                 if (pre && qc) pre.style.minHeight = qc.offsetHeight + 'px';
             })();
         """)
