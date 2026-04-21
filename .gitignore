@@ -18,3 +18,9 @@ tokenizer/node_modules/
 
 peekaboo demo files/
 
+# Planning / transitional docs
+PLAN.md
+DESIGN_DECISIONS.md
+ROADMAP.md
+RELEASE_NOTES_v*.md
+

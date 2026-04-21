@@ -4,12 +4,16 @@ A macOS Quick Look extension that renders source code files with syntax highligh
 
 Press Space on any code file in Finder and get a preview that actually looks like your editor — correct colors, correct font, your theme.
 
+<video src="https://github.com/user-attachments/assets/e5e5f140-9228-453a-aea5-10983e9872f0" autoplay loop muted playsinline></video>
+
 ## Features
 
 - Syntax highlighting powered by the same TextMate grammar engine VS Code uses
-- Automatically picks up your active VS Code (or Antigravity) theme
+- Automatically picks up your active VS Code (or Antigravity) theme — change your theme in VS Code, hit Refresh, and the preview updates instantly
 - Markdown rendering with GFM support and syntax-highlighted code blocks
 - Works in both Quick Look panel and Finder column view
+
+<video src="https://github.com/user-attachments/assets/14b17a9c-baf1-414d-9901-4a204ab453db" autoplay loop muted playsinline></video>
 
 ## Installation
 
