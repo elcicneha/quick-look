@@ -13,6 +13,14 @@ public struct ThemeData {
     public let background: String
     public let foreground: String
     public let tokenColors: [TokenColorRule]
+
+    public init(name: String, isDark: Bool, background: String, foreground: String, tokenColors: [TokenColorRule]) {
+        self.name = name
+        self.isDark = isDark
+        self.background = background
+        self.foreground = foreground
+        self.tokenColors = tokenColors
+    }
 }
 
 public struct TokenColorRule {

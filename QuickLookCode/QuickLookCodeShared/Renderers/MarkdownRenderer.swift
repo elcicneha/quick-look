@@ -41,12 +41,11 @@ public enum MarkdownRenderer {
         public let markdown: String
     }
 
-    /// Fast path: renders a Markdown file to a self-contained UTF-8 HTML document.
-    ///
-    /// Deliberately does NOT tokenize the raw markdown source for the Code tab —
-    /// that work (the dominant cost on a cold extension launch for small files)
-    /// is deferred to `renderSourceHTML`, which the caller runs off the critical
-    /// path and injects via `callAsyncJavaScript` once the WebView has painted.
+    /// Fast path: renders a Markdown file to a self-contained prose-only HTML
+    /// document (no Source-tab toggle; that is handled natively by
+    /// MarkdownPreviewController). The returned `markdown` string is the raw
+    /// source the caller feeds into `tokenizeSource` to populate the native
+    /// Source tab asynchronously.
     public static func render(
         fileURL: URL,
         theme: ThemeData,
@@ -60,9 +59,8 @@ public enum MarkdownRenderer {
 
         // 2. Strip leading YAML/TOML/JSON front matter before parsing.
         // cmark-gfm has no front-matter extension; without stripping, a `---`
-        // delimited block at the top renders as `<hr>` + a heading. The source
-        // view below still receives the original markdown so the raw file
-        // (including front matter) shows under the Code tab.
+        // delimited block renders as `<hr>` + heading. The source view still
+        // receives the original markdown (including front matter).
         let body = stripFrontMatter(markdown)
 
         // 3. Parse → HTML via cmark-gfm
@@ -75,10 +73,10 @@ public enum MarkdownRenderer {
         // 4. Highlight fenced code blocks with VS Code theme
         let highlightedHTML = await highlightCodeBlocks(in: anchoredHTML, theme: theme, ide: ide)
 
-        // 4. Resolve relative images → data URIs
+        // 5. Resolve relative images → data URIs
         let resolvedHTML = resolveImages(in: highlightedHTML, baseURL: fileURL.deletingLastPathComponent())
 
-        // 5. Load stylesheet
+        // 6. Load stylesheet
         guard
             let cssURL = Bundle(for: BundleAnchor.self).url(forResource: "markdown-styles", withExtension: "css"),
             let css = try? String(contentsOf: cssURL, encoding: .utf8)
@@ -86,23 +84,50 @@ public enum MarkdownRenderer {
             throw RendererError.cssNotFound
         }
 
-        // 6. Cheap placeholder for the Code tab — same <pre>/<code> shape as the
-        // tokenized version so the swap is visually seamless.
-        let placeholderSource = placeholderSourceHTML(markdown: markdown, theme: theme)
-
-        // 7. Assemble final document
-        let html = assembleHTML(body: resolvedHTML, sourceHTML: placeholderSource, css: css, fileName: fileName, theme: theme)
+        // 7. Assemble prose-only document (no Source tab; handled natively)
+        let html = assembleHTML(body: resolvedHTML, css: css, fileName: fileName, theme: theme)
         return RenderResult(html: Data(html.utf8), markdown: markdown)
     }
 
-    /// Deferred path: tokenizes the raw markdown source and returns an HTML
-    /// fragment (a `<pre><code>` block with `.line` spans and inline-styled
-    /// token spans) suitable for:
-    /// ```js
-    /// document.getElementById('ql-source-slot').innerHTML = fragment
-    /// ```
-    /// Runs the JS tokenizer — only call AFTER the initial HTML has reached
-    /// WKWebView so this cost overlaps with layout/paint.
+    /// Tokenizes the raw markdown source for the native Source tab.
+    ///
+    /// Call this after the initial prose render so the JSContext cold-start cost
+    /// overlaps with WKWebView layout/paint. Returns nil on any failure so the
+    /// caller can keep the plain-text placeholder.
+    public static func tokenizeSource(
+        markdown: String,
+        theme: ThemeData,
+        ide: IDEInfo
+    ) async -> [[SourceCodeRenderer.RawToken]]? {
+        guard let langInfo = FileTypeRegistry.language(forExtension: "md") else { return nil }
+        let grammarLoader = GrammarLoader(ide: ide)
+        guard let grammarData = try? grammarLoader.grammarData(for: langInfo.grammarSearch) else { return nil }
+
+        // Load sibling grammars for every fenced language so vscode-textmate
+        // can highlight embedded code blocks with per-language colors.
+        var siblingGrammars = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+        var loadedScopes = Set<String>()
+        for lang in extractFencedLanguages(from: markdown) {
+            let fencedLangInfo = FileTypeRegistry.language(forCodeFenceTag: lang)
+            guard !loadedScopes.contains(fencedLangInfo.grammarSearch) else { continue }
+            loadedScopes.insert(fencedLangInfo.grammarSearch)
+            if let gData = try? grammarLoader.grammarData(for: fencedLangInfo.grammarSearch) {
+                siblingGrammars.append(gData)
+                siblingGrammars.append(contentsOf: grammarLoader.siblingGrammarData(for: fencedLangInfo.grammarSearch))
+            }
+        }
+
+        return try? await SourceCodeRenderer.tokenize(
+            code: markdown,
+            language: langInfo.grammarSearch,
+            grammarData: grammarData,
+            siblingGrammars: siblingGrammars,
+            theme: theme
+        )
+    }
+
+    /// Legacy path retained for API compatibility. Use `tokenizeSource` instead —
+    /// the native NSTextView Source tab no longer injects HTML into the WebView.
     public static func renderSourceHTML(
         markdown: String,
         theme: ThemeData,
@@ -413,18 +438,6 @@ private extension MarkdownRenderer {
         """
     }
 
-    /// Plain-text Code-tab content used during the initial paint, before the
-    /// tokenizer finishes. Uses `.line` spans so the word-wrap toggle behaves
-    /// identically to the highlighted version — no layout jump on swap.
-    static func placeholderSourceHTML(markdown: String, theme: ThemeData) -> String {
-        let lineSpans = markdown.components(separatedBy: "\n").map { line in
-            "<span class=\"line\">\(escapeHTML(line))</span>"
-        }.joined()
-        return """
-        <pre style="background:\(theme.background);color:\(theme.foreground);margin:0;padding:16px 20px;font-family:ui-monospace,'SF Mono',Menlo,Monaco,Consolas,'Courier New',monospace;font-size:13px;line-height:1.6"><code style="display:block">\(lineSpans)</code></pre>
-        """
-    }
-
     /// Returns the unique set of language tags from fenced code blocks (``` or ~~~).
     static func extractFencedLanguages(from markdown: String) -> [String] {
         let pattern = #"^(?:```|~~~)(\w\S*)"#
@@ -530,7 +543,9 @@ private extension MarkdownRenderer {
 
 private extension MarkdownRenderer {
 
-    static func assembleHTML(body: String, sourceHTML: String, css: String, fileName: String, theme: ThemeData) -> String {
+    /// Assembles a prose-only HTML document. No Source tab, no CSS toggle machinery —
+    /// those are handled natively by MarkdownPreviewController in Phase 3+.
+    static func assembleHTML(body: String, css: String, fileName: String, theme: ThemeData) -> String {
         let escapedTitle = fileName
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -543,28 +558,12 @@ private extension MarkdownRenderer {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(escapedTitle)</title>
         <style>
-        \(ToolbarRenderer.css)
-        :root { \(ToolbarRenderer.wrapColorVariables(for: theme)) }
         \(css)
-        .line { display: block; min-height: 1.6em; white-space: pre; }
-        #ql-radio-code:checked ~ #ql-content { background: \(theme.background); }
-        #ql-view-code pre { border-radius: 0; margin-bottom: 0; }
         </style>
         </head>
         <body\(theme.isDark ? " class=\"dark\"" : "") style="--md-bg: \(theme.background); --md-fg: \(theme.foreground)">
-        \(ToolbarRenderer.toggleInputsHTML)
-        \(ToolbarRenderer.wordWrapCheckboxHTML)
-        \(ToolbarRenderer.toolbarHTML)
-        <div id="ql-content">
-          <div id="ql-view-preview">
-            <div class="markdown-body">
-            \(body)
-            </div>
-          </div>
-          <div id="ql-view-code">
-          \(ToolbarRenderer.wordWrapOverlayHTML)
-          <div id="ql-source-slot">\(sourceHTML)</div>
-          </div>
+        <div class="markdown-body">
+        \(body)
         </div>
         </body>
         </html>

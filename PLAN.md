@@ -1,352 +1,242 @@
-# QuickLook Extension — Build Plan
+# Native Stack Migration — Phased Plan
 
-## Core Idea
+Target end state:
+- **Two tokenizer modes.** *IDE-faithful* = a native Swift port of `vscode-textmate` (keeps bit-for-bit parity with VS Code's coloring). *Fast* = `tree-sitter` with our own curated theme system.
+- **Native rendering via TextKit 2** for all code files and the markdown Source tab. `WKWebView` stays only for markdown prose.
+- **Live editing** on the native renderer, driven by whichever tokenizer the user picked.
+- Cold first-paint for any code file bounded by macOS extension spawn (~100–250 ms).
 
-A macOS Quick Look extension that uses **VS Code's own tokenization engine and your active theme** to render code previews. The result is pixel-accurate coloring — identical to what you see in the editor — with zero manual theme configuration.
+Each phase below is executable in a dedicated chat. Phases are sequential — do not start phase N until phase N−1 is merged and green. Every phase ends with a named deliverable and a verifiable acceptance check.
 
----
-
-## Why This Approach
-
-VS Code is open source (MIT). It uses `vscode-textmate` to tokenize code and TextMate grammars (JSON files) for 100+ languages. Both are available:
-
-- `vscode-textmate` — published on npm, has a WASM build
-- Grammar files — sitting at `/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/`
-- Your active theme — JSON file in `~/.vscode/extensions/` or VS Code's built-in themes folder
-
-Using the same engine + same grammars + same theme = identical output. No separate theme setup, no color mismatch.
+> The previous build plan — JS vscode-textmate in a WKWebView, IDE integration, cmark-gfm markdown renderer, multi-layer caching — has shipped (see `ROADMAP.md` for the history). This document replaces it.
 
 ---
 
-## Architecture
+## Phase 1 — Tokenizer Protocol + Bench Harness
 
-### Rendering: HTML (not RTF)
+**Goal:** abstract the tokenizer behind a protocol and freeze today's output as a golden corpus, so later phases can swap implementations without regression.
 
-Since `vscode-textmate` runs in JavaScript, we use a WKWebView to:
-1. Load the WASM build of `vscode-textmate`
-2. Load the grammar file for the target language
-3. Tokenize the code
-4. Apply theme colors to tokens
-5. Return styled HTML to the Quick Look preview
+**Depends on:** nothing.
 
-RTF is out. HTML is the right call here since we're already in a JS context.
+**Scope in:**
+- Define `protocol Tokenizer` in `QuickLookCodeShared` exposing `tokenize(source:language:grammarData:siblingGrammars:theme:) async -> [[RawToken]]` (mirrors today's signature).
+- Refactor `SourceCodeRenderer.tokenize` and `MarkdownRenderer.highlightSnippet` / `generateSourceHTML` to depend on `Tokenizer`, not on the concrete `TokenizerEngine`.
+- Make today's JSC implementation the first conformer: `JSTokenizer: Tokenizer` wrapping `TokenizerEngine`.
+- Add a factory `TokenizerRegistry.current()` that returns the active tokenizer. For now it always returns `JSTokenizer`.
+- Build a bench+diff harness (new target or a `swift run` executable in `tokenizer/bench/`) that:
+  - Walks a test corpus of ~50 small and ~10 large files (Swift, Python, YAML, TS, JSON, Markdown, etc.).
+  - Tokenizes each via the current JSC engine.
+  - Writes the `[RawToken]` stream as JSON to `tokenizer/bench/golden/<filename>.json`.
+  - On re-run, compares new output against golden and prints diffs.
+- Commit the golden files.
 
-Markdown uses the same HTML path — `cmark-gfm` for parsing, code blocks tokenized by `vscode-textmate`.
+**Scope out:** no algorithm port, no renderer changes, no user-visible changes.
 
-### Three Xcode Targets
+**Acceptance:**
+- All existing previews behave identically.
+- `swift run bench --verify` against golden corpus passes with zero diffs.
+- `TokenizerEngine` is no longer referenced directly from any renderer — only through `Tokenizer`.
 
-```
-QuickLookApp/           — Host app (required by macOS to bundle the extension)
-                          Minimal UI: shows active VS Code theme name, status
-QuickLookExtension/     — QL Preview Extension (QLPreviewProvider)
-                          Routes file to renderer, returns HTML reply
-QuickLookShared/        — Framework with all rendering logic
-                          Used by both app and extension
-```
+**Risks:** the JSC output is not fully deterministic across runs (unlikely but possible with object-key ordering). If so, canonicalize the JSON output before comparison.
 
-### Renderer Routing
-
-```
-file arrives
-    ├── .md / .markdown  →  MarkdownRenderer  →  cmark-gfm + vscode-textmate for code blocks
-    └── everything else  →  SourceCodeRenderer →  vscode-textmate tokenization
-                                                   both → HTML → QLPreviewReply(.html)
-```
+**Handoff notes for next phase:** the golden corpus is the contract. Phase 2's success criterion is "matches golden" — that's the whole point of building this phase first.
 
 ---
 
-## File Structure
+## Phase 2 — Native `vscode-textmate` Port (Swift)
 
-```
-quick-look/
-├── QuickLook.xcodeproj
-│
-├── QuickLookApp/
-│   ├── QuickLookApp.swift
-│   ├── ContentView.swift           # Shows active theme, VS Code path status
-│   ├── Info.plist
-│   └── QuickLookApp.entitlements   # App Group
-│
-├── QuickLookExtension/
-│   ├── PreviewProvider.swift        # Entry point, routing, .ts magic byte check
-│   ├── Info.plist                   # QLSupportedContentTypes
-│   └── QuickLookExtension.entitlements
-│
-├── QuickLookShared/
-│   ├── Renderers/
-│   │   ├── PreviewRenderer.swift        # Protocol: render(fileURL:) → Data
-│   │   ├── SourceCodeRenderer.swift     # vscode-textmate → HTML
-│   │   ├── MarkdownRenderer.swift       # cmark-gfm → HTML, code blocks via textmate
-│   │   └── PlainTextRenderer.swift      # Fallback
-│   ├── VSCode/
-│   │   ├── VSCodeLocator.swift          # Finds VS Code installation path
-│   │   ├── GrammarLoader.swift          # Loads .tmGrammar.json from VS Code's extensions
-│   │   ├── ThemeLoader.swift            # Reads active VS Code theme JSON → token colors
-│   │   └── TokenMapper.swift           # Maps vscode-textmate token scopes → colors
-│   ├── FileTypeRegistry.swift          # Extension → renderer + grammar name mapping
-│   ├── HTMLRenderer.swift              # Assembles final HTML from tokens + theme
-│   ├── UserSettings.swift              # App Group UserDefaults (font, size, etc.)
-│   └── Resources/
-│       ├── vscode-textmate.wasm        # Compiled vscode-textmate WASM build
-│       ├── tokenizer.js                # JS glue: loads WASM, exposes tokenize()
-│       ├── markdown-styles.css         # GitHub-like markdown stylesheet
-│       └── base-template.html          # HTML shell, all CSS inlined at render time
-│
-└── Tests/
-    ├── GrammarLoaderTests.swift
-    ├── ThemeLoaderTests.swift
-    ├── RendererTests.swift
-    └── Fixtures/
-        ├── sample.swift
-        ├── sample.py
-        ├── sample.ts               # TypeScript (text)
-        ├── sample-video.ts         # Actual MPEG-2 file for magic byte test
-        └── README.md
-```
+**Goal:** replace the JavaScriptCore tokenizer with a pure-Swift implementation that produces bit-for-bit identical output. Keeps all IDE-integration behavior (user's grammars, user's theme). This is the single biggest speed win without changing fidelity.
+
+**Depends on:** Phase 1.
+
+**Scope in:**
+- New module directory: `QuickLookCodeShared/NativeTokenizer/`.
+- Port the following pieces of `vscode-textmate`:
+  - **Grammar loader** — parse `.tmLanguage.json` into an in-memory rule tree. Resolve `include` references (local, external-scope, base-scope, self).
+  - **Rule compiler** — compile patterns into `OnigScanner`-backed matchers (reuses existing `OnigScanner.swift`).
+  - **Rule stack** — the push/pop state machine that drives line-by-line tokenization.
+  - **Scope stack** — hierarchical scope tracking (`source.python meta.function-call string.quoted.double`).
+  - **Injection selector** — resolves `injectionSelector` patterns.
+  - **Theme matcher** — CSS-like selector matching with specificity scoring; returns `foreground`/`fontStyle` for each scope stack. This is the trickiest piece to match exactly.
+  - **Tokenizer** — the per-line entry point that combines all of the above.
+- Implement `NativeTokenizer: Tokenizer` conforming to the protocol from Phase 1.
+- Add a hidden dev setting (`UserDefaults` key) to switch between JS and native engines; default still JS at this phase.
+- Run the bench harness with `--engine=native` and enumerate every divergence from golden. Target: zero diffs. If a specific construct is genuinely underspecified in upstream docs, document the divergence in `DESIGN_DECISIONS.md`, note it in code, and get sign-off before moving on.
+- Flip default to native once diff count is zero (or zero excluding documented-and-accepted items).
+
+**Scope out:** no renderer change. Still handing HTML to `WKWebView`. No tree-sitter yet.
+
+**Acceptance:**
+- `swift run bench --verify --engine=native` passes against golden on full corpus.
+- Throughput on `pnpm-lock.yaml` improves by ≥5× vs JS baseline (measured in bench harness).
+- All existing previews behave indistinguishably from Phase 1 end state.
+- The JS tokenizer and `tokenizer-jsc.js` bundle are still present but unused by default.
+
+**Risks:**
+- **Theme matcher specificity ties.** `vscode-textmate` has idiosyncratic tiebreaking that isn't fully documented. Read the upstream TS source, not just docs. If a tie rule changes output on exotic themes, reproduce upstream exactly even if the rule seems weird.
+- **Injection selectors.** Rarely-used but present in several popular grammars. Plan a dedicated sub-sprint here.
+- **Cross-grammar includes.** Many grammars (YAML, TS, Markdown) pull scopes from each other. The grammar loader needs a resolver that can pull from `siblingGrammars` — follow the Phase 1 protocol signature.
+
+**Handoff notes:** after this phase, `TokenizerEngine`, `OnigJSBridge`, and `tokenizer-jsc.js` are dead code on the default path. Keep them for one release cycle as a fallback, then remove.
 
 ---
 
-## Phases
+## Phase 3 — NSTextView Code Renderer
 
-### Phase 0 — Xcode Scaffolding ✅
-**Goal:** Build succeeds, extension visible in System Settings → Extensions → Quick Look
+**Goal:** replace `WKWebView` with `NSTextView`/TextKit 2 for every code-file preview and for the markdown Source tab. `WKWebView` remains only for markdown prose.
 
-1. ✅ Created Xcode project `QuickLookCode`, macOS App target, deployment target **macOS 13.0**
-2. ✅ Added Quick Look Preview Extension target (`QuickLookCodeExtension`)
-3. ✅ Added Framework target (`QuickLookCodeShared`), linked into both App and Extension
-4. ✅ Configured App Group entitlement: `group.com.nehagupta.quicklookcode`
-5. ✅ `PreviewProvider` returns hardcoded HTML via `QLPreviewReply(dataOfContentType: .html)`
-6. ✅ `Info.plist` — `QLIsDataBasedPreview: true`, `QLSupportedContentTypes: [public.swift-source]`
-7. ✅ Built, launched app, confirmed `qlmanage -p test.swift` shows QuickLookCode preview
+**Depends on:** Phase 2 (not strictly required, but tokenizer speed should be landed before measuring renderer improvement).
 
-**Verified:** `qlmanage -p test.swift` shows dark HTML preview with filename — extension is live
+**Scope in:**
+- New `NativeCodePreviewController: NSViewController, QLPreviewingController` in `QuickLookCodeExtension/`.
+  - Hosts an `NSScrollView` containing an `NSTextView` with TextKit 2 enabled.
+  - `NSTextStorage` populated from `[RawToken]` → `NSAttributedString` attribute runs (`foregroundColor`, `font`, italic/bold/underline traits).
+  - Theme colors applied directly; no CSS.
+- Wrap toggle:
+  - `NSButton` overlay pinned top-right of the scroll view.
+  - Toggles `textContainer.widthTracksTextView` + container size.
+  - Drops every `:has()` / `position: fixed` workaround from the current WebView CSS.
+- Markdown split:
+  - `MarkdownPreviewController` remains a view controller but hosts a container with two child views: `WKWebView` (Preview tab) and `NSTextView` (Source tab).
+  - `NSSegmentedControl` drives the swap — no more CSS-only radio hack.
+- Routing in `PreviewViewController` (or a new dispatcher): by file extension, instantiate the right controller.
+- Keep progressive color fill-in within TextKit 2: start with plain-text attribute run (just bg/fg), then as tokenizer results stream back, replace attribute runs on the relevant ranges via `NSTextStorage.setAttributes(_:range:)`. TextKit 2 invalidates only the affected line fragments.
 
----
+**Scope out:** no editing yet — `isEditable = false`. No tree-sitter. No live-highlight-on-edit.
 
-### Phase 1 — VS Code / Antigravity Integration ✅
-**Goal:** Read grammars and theme directly from the IDE installation
+**Acceptance:**
+- Cold first-paint for code files drops to roughly macOS extension spawn + ~50 ms of our work.
+- `pnpm-lock.yaml` renders with colors in under 250 ms total.
+- Selection, keyboard nav, and copy work natively without extra wiring.
+- Wrap toggle works; markdown Preview/Code toggle works.
+- No regressions in rendered appearance vs Phase 2 end state. Spot-check: take screenshots of 10 representative files pre/post, visually diff.
 
-**Verified:** Host app shows `Antigravity · Default Dark Modern · Dark · #1F1F1F`
+**Risks:**
+- **Font and line-height.** TextKit 2 line metrics won't match CSS `line-height: 1.6` out of the box. Tune `NSParagraphStyle.lineHeightMultiple` until visual parity with the WebView preview.
+- **Monospace font fallback.** WebView's `ui-monospace` resolves to SF Mono on macOS; pin to `NSFont.monospacedSystemFont` explicitly.
+- **Dark-mode system chrome.** `NSTextView`'s selection highlight pulls from `NSColor.selectedTextBackgroundColor`. Make sure it reads sensibly against the theme's background.
 
-1. ✅ **IDELocator** (`QuickLookCodeShared/IDE/IDELocator.swift`) — finds VS Code (preferred) then Antigravity in `/Applications` and `~/Applications`. Returns all installed IDEs; `preferred` returns first found.
-
-2. ✅ **GrammarLoader** (`QuickLookCodeShared/IDE/GrammarLoader.swift`) — searches built-in and user extensions for `.tmLanguage.json` / `.tmGrammar.json` by language name. In-memory URL cache.
-
-3. ✅ **ThemeLoader** (`QuickLookCodeShared/IDE/ThemeLoader.swift`) — reads `workbench.colorTheme` from `settings.json`; falls back to `"Default Dark Modern"` when unset. Scans `themes/` folders in all extensions, matches by `"name"` key inside JSON. Returns `ThemeData` with background, foreground, and `[TokenColorRule]`.
-
-4. ✅ **TokenMapper** (`QuickLookCodeShared/IDE/TokenMapper.swift`) — TextMate prefix-matching algorithm, most-specific scope wins.
-
-5. ✅ **Entitlements** — added `temporary-exception` read-only access for `/Applications/`, `~/.vscode/`, `~/.antigravity/`, and both `Library/Application Support/` paths (app + extension).
-
-6. ✅ **Host app status UI** (`ContentView.swift`) — live display of detected IDE, path, theme name, type, and background color swatch.
-
-**Note:** IDE catalog supports VS Code + Antigravity (Google's VS Code fork). VS Code is preferred; Antigravity is fallback. Both share identical internal structure.
-
----
-
-### Phase 2 — Tokenization + HTML Output (⚠️ working with known gaps)
-**Goal:** Code files render with correct colors in Quick Look
-
-**What was built:**
-
-1. ✅ **JSC-based tokenizer** (`tokenizer/src/tokenizer-jsc.js`, built via esbuild)
-   - Uses `vscode-textmate` for tokenization
-   - Runs inside a `JSContext` (JavaScriptCore) — not WKWebView.
-   - Reason: QL extensions are sandboxed and cannot host a WKWebView reliably; JSC runs in-process and returns results synchronously.
-   - Two-step protocol: `initGrammar(grammarJSON)` then `doTokenize(code)` — JSC drains the microtask queue between calls, letting vscode-textmate's Promise-based API resolve without an event loop.
-
-2. ✅ **Native JS regex shim for oniguruma**
-   - `vscode-textmate` normally uses `vscode-oniguruma` (WASM). We can't ship WASM in a QL extension (see "Dead-end: WASM" below), so we wrote our own `makeOnigScanner` that wraps native JS `RegExp`.
-   - Handles the most common oniguruma→JS gaps: `\G` anchor (via slice + `^`), `(?x)` verbose mode (manual stripping), `\p{L}` Unicode props (adds `u` flag), `\x{HHHH}` codepoints, `\h` / `\H` / `\A` / `(?~...)`.
-   - **Known limit**: ~95% of grammar patterns work. Features like `\G` inside lookbehinds, `\K`, atomic groups, and complex absence operators break silently — tokens get mislabeled or skipped.
-
-3. ✅ **SourceCodeRenderer** (`QuickLookCodeShared/Renderers/SourceCodeRenderer.swift`)
-   - File-size guard: caps at 500 KB / 10,000 lines, appends truncation note.
-   - Creates a `JSContext`, loads the bundled `tokenizer-jsc.js`, calls `initGrammar` then `doTokenize`, parses back `[[RawToken]]`.
-   - Uses `TokenMapper` to resolve scope→color, then calls `HTMLRenderer`.
-
-4. ✅ **HTMLRenderer** (`QuickLookCodeShared/Renderers/HTMLRenderer.swift`)
-   - Self-contained HTML document with inlined CSS (sandbox blocks external loads).
-   - Uses theme's `editor.background` / `editor.foreground`, configurable font + size, optional line-number gutter, truncation note styling.
-   - ⚠️ `1lh` CSS unit is not supported in QL's WebKit — use `em`-based `min-height` instead.
-
-5. ✅ **FileTypeRegistry**, **UTType declarations**, **entitlements** — all wired up.
-
-6. ✅ **ThemeLoader `include` chain** — VS Code themes (`dark_modern.json`) frequently delegate via `"include": "./dark_plus.json"`. Original parser ignored this and returned zero rules, which caused all tokens to fall back to foreground color. Fixed with recursive `parseTokenColors(from:fileURL:)`.
-
-**Why this isn't good enough:**
-
-Two independent gaps prevent pixel-perfect output:
-
-- **Regex gap** (tokenization layer): Our JS-regex oniguruma approximation silently mislabels tokens whose grammar patterns use features JS regex can't express. Examples seen in the Swift grammar: comments rendered as plain text because of `(?!\G)` wrapper; `import Foundation` misclassified because of `\G` in a lookbehind; function names missed because of `(?x)` verbose patterns. We patched three specific breakages but the underlying engine is still an approximation.
-
-- **Scope→color gap** (mapping layer): `TokenMapper.swift` only handles single-component selectors. VS Code themes (and especially community themes) use multi-component selectors like `"meta.function.body variable.other"` (descendant), parent selectors, and exclusion selectors (`comment - comment.line`). Our mapper splits on spaces and treats the whole string as one prefix to match — none of these advanced forms work. Tokens get a reasonable fallback color, but not the exact color VS Code shows.
-
-**Dead-ends we ruled out:**
-
-- **WASM via WKWebView in the extension** — QL extensions under the App Sandbox can host a WebView but async WASM init fights with the QL reply lifecycle. The WKWebView build (`tokenizer.bundle.js`, ~2 MB) is retained for debugging only.
-- **WASM in JSC** — JSC supports WASM on paper, but WASM JIT requires `com.apple.security.cs.allow-jit`, which QL extensions are not granted. Interpreter fallback is too slow and may be disabled in the sandbox context.
-- **Extending TokenMapper to patch specific selector shapes** — brittle, per-theme whack-a-mole. Not pursued.
+**Handoff notes:** `WKWebView` shows up in only one place after this phase — the markdown-preview tab. `HTMLRenderer` becomes markdown-only and should be renamed or scoped to `MarkdownPrefixedRenderer` to make that explicit.
 
 ---
 
-### Phase 2.5 — Native Library Migration (in progress)
-**Goal:** Pixel-perfect parity with VS Code by replacing both approximations with the real implementations.
+## Phase 4 — Tree-sitter Integration (Fast Mode)
 
-Insight: we're a native macOS binary, not a browser. The reason VS Code ships WASM + hand-rolled TypeScript scope matching is that it runs in Electron. We can link C libraries and call real APIs directly.
+**Goal:** introduce tree-sitter as a second tokenizer behind a user-facing setting. IDE-faithful remains default; Fast is opt-in.
 
-**Part A — `tokenizeLine2` for color resolution ✅ (fixes the scope→color gap)**
+**Depends on:** Phase 1 (for the tokenizer protocol), Phase 3 (because Fast mode's value only materializes when rendering is also native).
 
-`vscode-textmate` exposes two tokenization APIs. We were using the wrong one.
+**Scope in:**
+- Vendor `tree-sitter` core (C) under `QuickLookCodeShared/Vendor/tree-sitter/`, alongside `Oniguruma/` and `cmark-gfm/`.
+- Vendor per-language parsers — initial set: Swift, Python, JavaScript, TypeScript, TSX, Rust, Go, YAML, JSON, HTML, CSS, SCSS, Bash, Markdown, C, C++, Ruby, Java, Kotlin, Dart, PHP, SQL, TOML. ~25 parsers to start; extend later.
+- Swift wrapper module: `TreeSitterEngine` conforming to `Tokenizer`.
+- Ship curated `.scm` highlight query files per language under `QuickLookCodeShared/Resources/tree-sitter-queries/`.
+- Capture-name-based theme format: `Theme` struct mapping capture names (`@keyword`, `@string`, `@function`, …) → color + style. Serialized as JSON.
+- Two bundled native themes initially: one dark, one light — visually tuned to look good out of the box.
+- Host app UI: new "Rendering" section with a segmented control (`IDE-faithful` / `Fast`). Persisted in App Group `UserDefaults` so the extension sees it.
+- When Fast is selected, `TokenizerRegistry.current()` returns `TreeSitterEngine`; when IDE-faithful is selected, returns `NativeTokenizer` from Phase 2.
 
-- `tokenizeLine(line, ruleStack)` → `[{startIndex, endIndex, scopes}]` — just scope labels; scope→color mapping left to the caller. This is what we used, and it's why `TokenMapper` existed.
-- `tokenizeLine2(line, ruleStack)` → `Uint32Array` of packed `(startIndex, metadata)` pairs where `metadata` is a bitfield containing the already-resolved foreground index, background index, and font-style flags. This is what VS Code itself uses. The library handles scope→color mapping internally — descendant selectors, parent selectors, exclusion selectors, specificity scoring — all correctly.
+**Scope out:** no VS Code theme importer yet. No live editing. Coverage for languages outside the initial ~25 falls through to a plain-text fallback in Fast mode — document this as a known limitation to resolve in Phase 5.
 
-What was built:
+**Acceptance:**
+- Toggling modes in the host app switches the extension's rendering on the next preview. No relaunch required.
+- Throughput on `pnpm-lock.yaml` in Fast mode: <20 ms tokenize.
+- Throughput on a 1 MB JS lockfile: <80 ms tokenize.
+- Rendered appearance in Fast mode looks coherent (not necessarily matching IDE) — reviewer sign-off that it's "professionally colored" on the top ~10 languages.
 
-1. ✅ **[tokenizer-jsc.js](tokenizer/src/tokenizer-jsc.js) rewritten** — `initGrammar(grammarJSON, themeJSON)` now calls `registry.setTheme(theme)` and captures `registry.getColorMap()` before kicking off grammar load. `doTokenize` uses `grammar.tokenizeLine2(...)` and unpacks metadata using the real `MetadataConsts` offsets:
-   ```
-   fontStyle  = (metadata >>> 11) & 0xF    // 1=italic, 2=bold, 4=underline, 8=strikethrough
-   foreground = (metadata >>> 15) & 0x1FF  // index into color map
-   ```
-   Returns `[{text, color, fontStyle}]` lines. Swift just renders.
+**Risks:**
+- **Install size.** 25 parsers might add 10–20 MB. Audit per-parser size; consider deferring rare ones.
+- **Query quality.** Upstream community-maintained `.scm` files vary. For each language, compare output visually to an authoritative source (Zed or Neovim) and tweak queries as needed. Commit our curated forks under our resources dir.
+- **Markdown code blocks.** In Fast mode inside markdown, fenced blocks should also use tree-sitter. Make sure the markdown path routes through `TokenizerRegistry.current()` so Fast mode takes effect there too.
 
-2. ✅ **[SourceCodeRenderer.swift](QuickLookCode/QuickLookCodeShared/Renderers/SourceCodeRenderer.swift) — theme serialization** — `serializeTheme(ThemeData)` builds an `IRawTheme`-shaped JSON blob:
-   - First settings entry carries the theme's `editor.foreground` / `editor.background` so tokens with no matching rule still get the correct default
-   - Remaining entries mirror `ThemeData.tokenColors` one-for-one (scope array + foreground + fontStyle)
-   - Passed as second arg to `initGrammar` on every render
-
-3. ✅ **`TokenMapper` deleted** — [TokenMapper.swift](QuickLookCode/QuickLookCodeShared/IDE/TokenMapper.swift) removed. The project uses Xcode 16+ `fileSystemSynchronizedGroups`, so no `project.pbxproj` edits were needed — removing the file from disk was sufficient. The render pipeline is now: `tokenize(code, grammar, theme) → [[{text, color, fontStyle}]] → HTMLRenderer.TokenSpan` with no Swift-side scope matching.
-
-4. ✅ **`ThemeData` / `ThemeLoader` unchanged** — the loader still produces `ThemeData` with `tokenColors: [TokenColorRule]`; `serializeTheme` just re-encodes that into VS Code's wire format for `setTheme`. The `include` chain resolution we added in Phase 2 still feeds in correctly.
-
-**Part B — Native oniguruma ✅ (fixes the regex gap)**
-
-What was built:
-
-1. ✅ **Vendored oniguruma C source** — `QuickLookCode/QuickLookCodeShared/Vendor/Oniguruma/` contains the full oniguruma library (48 `.c` files). Include-only data files renamed to `.inc` so Xcode's `fileSystemSynchronizedGroups` skips them as standalone translation units. POSIX/GNU compatibility wrappers (`regposix.c`, `reggnu.c`, `regposerr.c`, `mktable.c`) deleted — not needed.
-
-2. ✅ **`config.h` + `OnigShim.h`** — `config.h` sets platform constants for macOS (`HAVE_ALLOCA`, `SIZEOF_LONG`, etc.). `OnigShim.h` exposes static inline wrappers (`onigshim_utf16le()`, `onigshim_syntax_oniguruma()`) because Swift can't take `&` of imported C globals directly.
-
-3. ✅ **`module.modulemap`** — declares the `COniguruma` module so Swift can `import COniguruma`.
-
-4. ✅ **[OnigScanner.swift](QuickLookCode/QuickLookCodeShared/IDE/OnigScanner.swift)** — Swift wrapper implementing `vscode-textmate`'s `IOnigLib` interface:
-   - `OnigRuntime.ensure()` — one-time `onig_initialize` via lazy static
-   - `OnigString` — caches UTF-16 buffer of a JS string to avoid re-copying on each search
-   - `OnigScanner` — compiles patterns with `onig_new(ONIG_ENCODING_UTF16_LE)`, searches with `onig_search`. UTF-16 LE encoding chosen so byte offsets map to JS string indices by dividing by 2 — no UTF-8↔UTF-16 conversion needed.
-   - `findNextMatchSync` — iterates all compiled regexes, returns earliest match with capture indices
-   - `OnigJSBridge.install(in:)` — installs `globalThis.onigLib = { createOnigScanner, createOnigString }` via `@convention(block)` closures before the tokenizer bundle loads
-
-5. ✅ **[tokenizer-jsc.js](tokenizer/src/tokenizer-jsc.js) cleaned up** — entire JS regex shim removed (`makeOnigScanner`, `stripVerbose`, `sanitizePattern`, `buildEntry`, `capturePositions`, `jsOnigLib`). `initGrammar` now checks `globalThis.onigLib` and passes it directly to the `Registry`. WKWebView bundle target removed from `esbuild.js`.
-
-**Result:** 100% oniguruma compatibility, native speed, no WASM, no JIT entitlement. Extension registered and rendering via `qlmanage -p`.
-
-**Verify:**
-- Same Swift source file visually diffed against VS Code — comments, strings, function names, keywords, types, operators all match color-for-color.
-- Spot-check against one or two community themes that use multi-component selectors (e.g. One Dark Pro) to confirm the scope→color fix lands.
-- `qlmanage -p` on .py, .swift, .js, .json, .ts, .rs — colors identical to VS Code.
+**Handoff notes:** `NativeTokenizer` from Phase 2 stays wired in. Fast mode is additive, never replaces the default. Users who set it back to IDE-faithful should see zero difference from Phase 3 end state.
 
 ---
 
-### Phase 3 — Markdown Renderer ✅
-**Goal:** `.md` files render as full GitHub-flavored Markdown
+## Phase 5 — Theme System + VS Code Importer
 
-**What was built:**
+**Goal:** make Fast mode comfortable for users who want their IDE's look without paying IDE-faithful mode's speed cost.
 
-1. ✅ **cmark-gfm vendored** (`QuickLookCodeShared/Vendor/cmark-gfm/`) — full C source (~60 files) from `github/cmark-gfm` 0.29.0.gfm.13. Four CMake-generated headers hand-crafted for macOS. Two upstream `.inc` data files renamed to `.h` to prevent `PBXFileSystemSynchronizedRootGroup` from treating them as compilation units. `CCmarkGFM` module declared in `module.modulemap`.
+**Depends on:** Phase 4.
 
-2. ✅ **`MarkdownRenderer.swift`** (`QuickLookCodeShared/Renderers/MarkdownRenderer.swift`):
-   - Parses `.md`/`.markdown` via cmark-gfm C API with `table`, `tasklist`, `strikethrough`, `autolink` extensions
-   - Post-processes HTML: regex-extracts fenced code blocks, HTML-entity-decodes content, tokenizes via `SourceCodeRenderer.tokenize`, replaces with highlighted spans (inline `style=` from VS Code theme)
-   - Grammar cache per render to avoid re-loading the same language for repeated code blocks
-   - Relative image `src` attributes resolved to data URIs (base64, 2 MB cap); network URLs left as-is
-   - Falls back to plain cmark HTML for unknown languages or tokenizer errors
+**Scope in:**
+- Expand bundled theme set to 8–10 carefully curated choices (Dracula, Tokyo Night, Solarized Light/Dark, GitHub Light/Dark, Monokai, Nord, One Dark).
+- Host-app theme picker UI: grid of theme previews (small snippet rendered in each theme), click to select.
+- VS Code theme importer tool in the host app:
+  - Accept a `.json` VS Code theme via file picker or drop.
+  - Parse `tokenColors` array.
+  - Apply a scope → capture mapping table (ship a best-effort mapping — e.g., `keyword.control` → `@keyword.control`, `string` → `@string`, etc.).
+  - Write the result as a native theme JSON file to the app's cache dir.
+  - Preview side-by-side: the user's IDE preview vs our imported-theme preview on a sample file. Show a "visual diff" highlight so they can see where coloring will differ.
+  - Allow per-capture manual override.
+- User themes stored in `~/Library/Application Support/Peekaboo/themes/` and picked up by the extension.
+- "Reset to bundled" button to discard imports.
 
-3. ✅ **`markdown-styles.css`** (`QuickLookCodeShared/Resources/markdown-styles.css`) — GitHub-like prose stylesheet. CSS custom properties with `@media (prefers-color-scheme: dark)` variant. Prose follows system appearance; code blocks always use VS Code theme via inline `style=`.
+**Scope out:** no theme editor GUI (capture-by-capture color picker) yet — user either accepts the import or edits the JSON manually.
 
-4. ✅ **`PreviewProvider.swift`** — `md`/`markdown` extension short-circuits before `FileTypeRegistry` lookup, routes to `renderMarkdown`.
+**Acceptance:**
+- Importing a VS Code theme produces a usable, aesthetically coherent Fast-mode theme.
+- Side-by-side preview shows differences transparently; user is never surprised.
+- Persists across launches without cache-clear.
 
-5. ✅ **`Info.plist`** — `net.daringfireball.markdown` added to `QLSupportedContentTypes`; custom `com.nehagupta.quicklookcode.markdown` UTType declared for `.markdown` extension.
+**Risks:**
+- **Scope → capture mapping coverage.** The mapping table needs to handle dozens of scope prefixes. Start with a conservative subset, expand iteratively.
+- **Theme JSON dialects.** VS Code themes ship variations (JSONC comments, `semanticTokenColors`, `include` references). Support the common shape, warn on the rest.
 
-**Verify:** `qlmanage -p README.md` — tables, task lists, syntax-highlighted code blocks render correctly
-
----
-
-### Phase 4 — TypeScript `.ts` Preview ❌ NOT ACHIEVABLE
-
-**Finding:** `.ts` TypeScript preview is not possible via the Quick Look extension API on macOS.
-
-**Root cause (confirmed by testing):**
-
-macOS maps `.ts` → `public.mpeg-2-transport-stream` at the system UTType level. This type is handled by a hardcoded URL-based media preview pipeline inside `quicklookd` that runs **before** the extension mechanism is consulted. No amount of UTType declarations, `QLSupportedContentTypes` entries, `CFBundleDocumentTypes` claims, or `LSHandlerRank=Owner` can redirect this pipeline to a QL extension.
-
-**Evidence:**
-- With `public.mpeg-2-transport-stream` in `QLSupportedContentTypes` and a dummy pink HTML response in the extension, the extension was never called — `qlmanage -p` reported `produced a preview with a URL of type public.mpeg-2-transport-stream`
-- For `.swift` files (no competing media handler), the extension is correctly invoked
-- Tested both from DerivedData and from a properly installed `/Applications` build — no difference
-- `lsregister` confirmed `LSHandlerRank=Owner` was registered; it had no effect on QL routing
-
-**Approaches attempted and failed:**
-1. `public.mpeg-2-transport-stream` in `QLSupportedContentTypes`
-2. Custom UTType `com.nehagupta.quicklookcode.typescript` exporting `.ts`
-3. `CFBundleDocumentTypes` + `LSHandlerRank=Owner` on the host app
-4. Installing to `/Applications` for proper LS registration
-
-**Conclusion:** `.ts` is a macOS-reserved extension for a media type. The QL media pipeline is not extensible. Skip this phase.
+**Handoff notes:** after this phase, Fast mode is ready to be promoted as the default in a future release. Keep IDE-faithful as the fallback for users whose grammars or themes aren't covered by the tree-sitter set.
 
 ---
 
-### Phase 5 — Polish & Auto-Update
-**Goal:** Zero maintenance, always in sync with VS Code
+## Phase 6 — Live Editing
 
-1. **Theme auto-detection** — watch `~/Library/Application Support/Code/User/settings.json` for changes using `FSEventStream`. When theme changes in VS Code, next Quick Look preview automatically uses the new theme. No restart needed.
+**Goal:** turn the preview into a real editor. Edit, undo, re-highlight as you type, save.
 
-2. **Font sync** — read `"editor.fontFamily"` and `"editor.fontSize"` from VS Code settings, use those in previews
+**Depends on:** Phase 3 (the NSTextView renderer) and Phase 4 (tree-sitter for incremental re-highlight in Fast mode). Phase 5 is nice-to-have but not required.
 
-3. **Line numbers** — optional toggle (reads VS Code's `"editor.lineNumbers"` setting)
+**Scope in:**
+- Add "Edit" toggle to the preview toolbar (new `NSButton`). Default is read-only; click to enter edit mode.
+- In edit mode:
+  - `NSTextView.isEditable = true`.
+  - Text input, selection, undo/redo all come from NSTextView's built-ins.
+- `NSTextStorage` delegate handles `processEditing(_:range:changeInLength:)`:
+  - **Fast mode (tree-sitter):** compute the edit as a `TSInputEdit`, call `ts_parser_parse` with the previous tree → tree-diff → recompute highlights only for ranges that changed → apply attribute deltas.
+  - **IDE-faithful mode (native vscode-textmate):** re-tokenize from the edit's start line to EOF (cheaper than full-file but still linear); apply attribute deltas. Size-gate: above some threshold (say 20 k lines), debounce to avoid re-tokenizing on every keystroke.
+- Save flow:
+  - "Save" button commits to the original file via `NSDocument`-style save (user confirms first time; remember consent per file).
+  - "Revert" button discards unsaved edits.
+  - Unsaved-edit indicator in the preview chrome.
+- Handle concurrent external file changes — if file mtime changes while editing, prompt on save.
 
-4. **Host app UI** — simple status view:
-   - "VS Code found at: /Applications/..."
-   - "Active theme: GitHub Dark"
-   - Override toggles: font size, line numbers, word wrap
+**Scope out:** collaborative editing, multi-cursor, find-and-replace, autocomplete. This phase is "it edits and saves" — not a full IDE.
 
----
+**Acceptance:**
+- One-char edit in a 10 k-line file in Fast mode: re-highlight latency <5 ms.
+- One-char edit in IDE-faithful mode on a 5 k-line file: re-highlight <200 ms.
+- Undo/redo works natively.
+- Save round-trips through the filesystem; mtime updates.
+- No crashes on rapid editing, rapid save, rapid mode switching.
 
-## Key Dependencies
+**Risks:**
+- **File permissions.** Quick Look extensions run sandboxed. Writing back to the original file requires `com.apple.security.files.user-selected.read-write` (currently read-only in the manifest). Verify that user-initiated saves work inside the sandbox.
+- **Data loss.** Unsaved edits when the preview is dismissed need prompting. QL extensions have limited lifecycle hooks — investigate whether we can intercept dismissal, or make autosave default with a local draft.
+- **Tree-sitter edit conversion.** `TSInputEdit` takes byte offsets and row/column; NSTextStorage edits are in UTF-16 units. Conversion needs care to get right.
 
-| Dependency | Source | Purpose |
-|---|---|---|
-| `vscode-textmate` | npm, bundled via esbuild | Tokenization + scope→color via `tokenizeLine2` |
-| `oniguruma` (C library) | vendored / SwiftPM / xcframework | Regex engine — linked natively, exposed to JSC from Swift |
-| TextMate grammars | IDE installation (VS Code / Antigravity) | Language definitions |
-| User's active theme | IDE installation | Token colors + font styles |
-| `cmark-gfm` | Swift Package Manager | Markdown parsing (Phase 3) |
-
----
-
-## Testing
-
-```bash
-# Test a file
-qlmanage -p path/to/file.py
-
-# Reload extension after changes
-qlmanage -r
-killall -HUP Finder
-
-# Check extension is registered
-pluginkit -m -v | grep quicklook
-
-# Note: .ts files are NOT supported — macOS routes them through
-# the media preview pipeline before QL extensions are consulted
-```
+**Handoff notes:** after this phase, Peekaboo is no longer "just a Quick Look extension." Re-scope the README accordingly.
 
 ---
 
-## Out of Scope
+## Cross-phase working agreements
 
-- Mac App Store distribution
-- Notarization / public release
-- Bracket pair colorization (VS Code UI feature, not tokenization)
-- Jupyter notebooks
-- CSV / table rendering
+- **Every phase keeps the previous phase's acceptance criteria green.** No regressions allowed.
+- **Bench harness runs in CI** from Phase 1 onward. Bench output diffs fail the build.
+- **`DESIGN_DECISIONS.md` gets an entry per phase** documenting any non-obvious trade-off chosen inside the phase.
+- **`CLAUDE.md` gets updated incrementally** — the caching architecture section, tokenizer section, and renderer routing diagrams all drift as phases land.
+- **No feature flags left behind.** Once a phase is the default, the old code path is retired on the next phase boundary.
+
+## Post-phase candidates (not scheduled)
+
+- Code folding via tree-sitter AST ranges.
+- Symbol outline panel.
+- Multi-file search.
+- A custom theme editor with live preview.
+- Remove IDE-faithful mode entirely once Fast mode coverage is universal (unlikely — keep both).

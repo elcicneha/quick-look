@@ -82,7 +82,7 @@ public enum SourceCodeRenderer {
 
     // MARK: - File reading + size guard
 
-    private static func readFile(at url: URL) -> (String, String?) {
+    public static func readFile(at url: URL) -> (String, String?) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         let byteCount = (attrs?[.size] as? Int) ?? 0
 
@@ -122,7 +122,7 @@ public enum SourceCodeRenderer {
     /// Tokenizes `code` using the shared JSContext. Async because it awaits the actor.
     /// The `language` key is used to detect grammar changes between calls so the engine
     /// can skip re-initializing when the same language is tokenized twice in a row.
-    static func tokenize(
+    public static func tokenize(
         code: String,
         language: String,
         grammarData: Data,
@@ -218,10 +218,10 @@ public enum SourceCodeRenderer {
 // MARK: - Internals
 
 extension SourceCodeRenderer {
-    struct RawToken {
-        let text: String
-        let color: String?
-        let fontStyle: String?
+    public struct RawToken {
+        public let text: String
+        public let color: String?
+        public let fontStyle: String?
     }
 }
 
