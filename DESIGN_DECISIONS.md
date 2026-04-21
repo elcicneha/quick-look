@@ -4,6 +4,29 @@ A running record of non-obvious architectural decisions, failed approaches, and 
 
 ---
 
+## NSTextView for code-file previews (Phase 3)
+
+**Decision**: replaced the WKWebView + HTML path for code files (`.swift`, `.py`, etc.) with a native `NativeCodePreviewController` backed by `NSTextView` / TextKit 1. Markdown prose still uses WKWebView (cmark-gfm output is HTML; native rendering of arbitrary HTML is not feasible). The markdown *source* tab also uses NSTextView.
+
+**Why NSTextView instead of WKWebView for code**:
+
+| Factor | WKWebView | NSTextView |
+|---|---|---|
+| First visible content | ~242 ms (must finish tokenizing before loading HTML) | **~15 ms** (plain text shown immediately, tokens applied after) |
+| Memory | Separate web content process per pool | In-process |
+| Scroll | Required JS workarounds for short files and right-edge padding (see sections below) | Native NSScrollView — no quirks |
+| Architecture complexity | HTML generation + CSS + JS injection | `NSAttributedString` directly from tokens |
+
+**Progressive rendering**: `NativeCodePreviewController` exposes two calls — `showPlainText(_:theme:)` fires immediately (before tokenization), then `display(tokens:theme:truncationNote:)` swaps in the syntax-highlighted `NSAttributedString` once the `TokenizerEngine` actor returns. The user sees content within ~15 ms regardless of file size; highlighting follows at ~250 ms.
+
+**TextKit 1 stack** (explicit `NSTextStorage` / `NSLayoutManager` / `NSTextContainer`): required for word-wrap control. The default `NSTextView(frame:)` convenience path creates a TextKit 2 coordinator on macOS 12+; its `NSTextContainer` is owned by a different object and `widthTracksTextView` changes do not take effect predictably. Explicit TextKit 1 stack gives deterministic wrap toggle via `containerSize` + `widthTracksTextView` + `autoresizingMask`.
+
+**Word-wrap hanging indent**: `TextKitRenderer` computes `NSParagraphStyle.headIndent` per source line from the leading whitespace width (`font.maximumAdvancement.width` × character count, tab = 4 spaces). This makes wrapped continuation lines align with the first non-space character, matching the visual indent expected from a code editor.
+
+**The WKWebView sections below (horizontal scroll, right-edge padding, CSS percentage heights, `position: fixed`) apply only to the markdown prose tab.** They are no longer relevant to code-file previews.
+
+---
+
 ## Horizontal scroll in short code files
 
 **Problem**: When a code file has fewer lines than the viewport height, the horizontal scrollbar appeared just below the last line of code — not at the bottom of the Quick Look window. Hovering in the empty space below the code did not trigger scroll.
@@ -134,14 +157,14 @@ The only reliable way to fill a scroll container to its rendered height is to re
 
 **What works**: split the render into two phases.
 
-1. **Fast phase** in `MarkdownRenderer.render` now returns `RenderResult { html, markdown }`. `html` contains the fully-rendered preview plus a cheap plain-text placeholder (same `<pre>/<code>` shape + `.line` spans) inside `<div id="ql-source-slot">`. No tokenizer work for the Source tab. `WKWebView.loadHTMLString` fires immediately.
-2. **Deferred phase** in `PreviewViewController.webView(_:didFinish:)` after first paint: calls the new public `MarkdownRenderer.renderSourceHTML(markdown:theme:ide:)` and injects the tokenized fragment via `webView.callAsyncJavaScript("document.getElementById('ql-source-slot').innerHTML = html;", arguments: ["html": sourceHTML], …)`. The 100–220 ms of tokenizer init + `initGrammar` overlaps with WKWebView layout/paint and the user eyeballing the preview.
+1. **Fast phase** — `MarkdownRenderer.render` returns `RenderResult { html, markdown }`. `html` is the fully-rendered prose (cmark-gfm + fenced-block highlights); `markdown` is the raw source string. `WKWebView.loadHTMLString` fires immediately with the prose. The source tab shows a plain-text `NSAttributedString` placeholder via `MarkdownPreviewController.showSourcePlaceholder(_:theme:)` — no tokenizer work yet.
+2. **Deferred phase** — `PreviewViewController.renderMarkdown` calls `MarkdownRenderer.tokenizeSource(markdown:theme:ide:)` on a background task, then calls `MarkdownPreviewController.showSource(tokens:theme:)` which replaces the NSTextView's `textStorage` with the highlighted `NSAttributedString`. The 100–220 ms of tokenizer init + `initGrammar` overlaps with WKWebView rendering the prose.
 
-**Why a dedicated `#ql-source-slot` div instead of targeting `#ql-view-code.innerHTML`**: the wrap overlay button (`ToolbarRenderer.wordWrapOverlayHTML`) is a DOM sibling of the slot inside `#ql-view-code`. Replacing `#ql-view-code.innerHTML` would wipe the wrap button on every markdown preview. The slot isolates the swap to just the source content.
+**Phase 3 change**: the source tab is now a native `NSTextView` inside `MarkdownPreviewController`, not a `#ql-source-slot` div injected into the WKWebView via `callAsyncJavaScript`. The JS injection approach (with `ql-source-slot`, `webView(_:didFinish:)` callback, and the argument-bridge injection) has been removed. The two-phase split is preserved but the deferred result now writes to `NSTextStorage` instead of the DOM.
 
-**Why `callAsyncJavaScript` with argument bridge instead of `evaluateJavaScript(String)`**: passing the HTML as a JS argument means WKWebView serializes it — no hand-escaping of backslashes/quotes/newlines in a multi-kilobyte string, and no opportunity for user-content (the raw markdown) to break out of a string literal.
+**Why native NSTextView for the source tab**: consistent with the code-file path; eliminates the HTML generation step (`renderSourceHTML`) for the source tab; avoids the JS injection surface; and the wrap toggle is handled natively by `NSParagraphStyle` / `NSTextContainer` rather than a CSS checkbox hack.
 
-**Why the placeholder uses `.line` spans + the same `<pre>` inline styles as the tokenized version**: the word-wrap toggle keys off `.line`. If wrap is on when the swap happens, the layout must stay identical to avoid a visible jump. Placeholder and tokenized HTML share the exact `<pre>` style string for this reason.
+**Why the deferred call is in `renderMarkdown` not `webView(_:didFinish:)`**: with a native NSTextView there is no page-load callback to hook. The deferred task runs as a plain `await` after `installChild` returns — simpler and still non-blocking for the prose display.
 
 ---
 
@@ -149,7 +172,7 @@ The only reliable way to fill a scroll container to its rendered height is to re
 
 **Problem**: rapid space-bar presses on successive files created overlapping `preparePreviewOfFile` calls. Each one hit the `TokenizerEngine` actor; dismissed previews kept running to completion because `async`/`await` does not auto-cancel. A burst of 3–4 rapid presses would stack tokenize requests on the actor's mailbox, each blocking the next, and Quick Look's own response deadline would eventually surface "Failed to load preview" for requests that couldn't get through in time.
 
-**What works**: `Task.isCancelled` checks at each await-boundary in `preparePreviewOfFile` / `renderHTML` / `renderMarkdown`. When QL cancels a preview, the in-flight task bails before doing the expensive work, leaving the actor free for the replacement preview.
+**What works**: `Task.isCancelled` checks at each await-boundary in `preparePreviewOfFile` / `renderCode` / `renderMarkdown`. When QL cancels a preview, the in-flight task bails before doing the expensive work, leaving the actor free for the replacement preview.
 
 **Why `if Task.isCancelled { return }` not `try Task.checkCancellation()`**: throwing from `preparePreviewOfFile` makes Quick Look show its own "Failed to load preview" banner — user sees an error instead of a blank-then-swap. Silent early-return avoids the error UI; QL drops the empty result on the floor because it's already moved on.
 

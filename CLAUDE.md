@@ -96,7 +96,7 @@ The `RELEASE_NOTES_vX.Y.Z.md` file is throwaway — it exists only to feed `gh r
 Three Xcode targets, all in `QuickLookCode/QuickLookCode.xcodeproj`:
 
 - **QuickLookCode** — host macOS app (required by macOS to ship an extension). Minimal SwiftUI UI showing IDE detection status and active theme.
-- **QuickLookCodeExtension** — the actual Quick Look preview extension (view-based `QLPreviewingController`). Entry point: `PreviewViewController.swift` — hosts a sandboxed `WKWebView` and calls `webView.loadHTMLString(...)` with the rendered HTML. Routes files through the full render pipeline; falls back to plain text on any failure.
+- **QuickLookCodeExtension** — the actual Quick Look preview extension (view-based `QLPreviewingController`). Entry point: `PreviewViewController.swift` — a thin router that installs either `NativeCodePreviewController` (NSTextView, for source files) or `MarkdownPreviewController` (WKWebView prose + NSTextView source tab, for `.md`/`.markdown`). Falls back to plain text on any failure.
 - **QuickLookCodeShared** — framework linked into both targets above. Contains all IDE integration logic.
 
 **Target dependencies**: `QuickLookCodeExtension` has an explicit `PBXTargetDependency` on `QuickLookCodeShared` even though it does not link the framework (the host app embeds it, resolved at runtime via `@rpath`). The dependency exists purely to force build ordering — without it, `xcodebuild archive` races and the extension's Swift compile can't find the shared module. Xcode GUI masks this via implicit inference, but CLI builds break. Do not remove this dependency.
@@ -105,9 +105,11 @@ Three Xcode targets, all in `QuickLookCode/QuickLookCode.xcodeproj`:
 
 ```
 file extension
-    ├── "md" / "markdown"  →  MarkdownRenderer  →  cmark-gfm + per-block SourceCodeRenderer
-    └── everything else    →  SourceCodeRenderer →  JSC vscode-textmate pipeline
-                                                     both → HTML string → WKWebView.loadHTMLString
+    ├── "md" / "markdown"  →  MarkdownPreviewController
+    │                            ├── prose:  MarkdownRenderer (cmark-gfm + per-block highlight) → WKWebView.loadHTMLString
+    │                            └── source: NSTextView ← TextKitRenderer ← SourceCodeRenderer (tokenized, deferred)
+    └── everything else    →  NativeCodePreviewController
+                                 └── NSTextView ← TextKitRenderer ← SourceCodeRenderer (JSC vscode-textmate)
 ```
 
 ### Data Flow
@@ -158,7 +160,7 @@ L2 — Process-lifetime in-memory singletons
      Survive across space-bar presses while macOS keeps the extension host warm.
 
 L1 — Per-render work (always runs)
-     File read, tokenizeLine2, HTML string build, WKWebView paint.
+     File read, tokenizeLine2, NSAttributedString build, NSTextView/WKWebView paint.
 ```
 
 **CacheManager** (`Cache/CacheManager.swift`) orchestrates bootstrap and refresh. Call `CacheManager.bootstrap()` before every render — the hot path is a single atomic boolean check (`_loadedCacheVersion != nil && !_needsReload`), no disk I/O. The host app's **Refresh** button calls `CacheManager.refresh()` to force a full rebuild — use this after changing the IDE theme.
@@ -180,28 +182,29 @@ CacheManager.bootstrap()
     → IDELocator._cached / ThemeLoader._cachedTheme (L2 hit — no disk I/O)
     → GrammarLoader.grammarData(for:) (L2 static cache hit after first use)
 
-SourceCodeRenderer.render(fileURL:grammarData:theme:)
-    → tokenize(code:language:grammarData:theme:)
-        → TokenizerEngine.shared.tokenize(...)  ← shared JSContext (actor)
-            → initGrammar (only on language/theme change)
-            → doTokenize(code) ← tokenizeLine2 → [{text, color, fontStyle}]
-    → HTMLRenderer.render(lines:theme:)         ← inlined-CSS HTML document
+SourceCodeRenderer.tokenize(code:language:grammarData:theme:)
+    → TokenizerEngine.shared.tokenize(...)  ← shared JSContext (actor)
+        → initGrammar (only on language/theme change)
+        → doTokenize(code) ← tokenizeLine2 → [{text, color, fontStyle}]
+
+TextKitRenderer.attributedString(lines:theme:)  ← NSAttributedString for NSTextView
 ```
 
 The JS bundle (`tokenizer-jsc.js`) is built via esbuild from `tokenizer/src/tokenizer-jsc.js`. The build output goes directly to `QuickLookCode/QuickLookCodeShared/Resources/tokenizer-jsc.js` — no manual copy needed. Run `pnpm run build` inside `tokenizer/` after changing JS source.
 
-`HTMLRenderer` composes the final document and uses `ToolbarRenderer` for the in-preview chrome.
+**TextKitRenderer** (`QuickLookCodeShared/TextKitRenderer.swift`) converts `[TokenLine]` to `NSAttributedString`. Key details:
+- Line height: `lineHeightMultiple = 1.4` per `NSMutableParagraphStyle`.
+- Word-wrap continuation indent: computed as `leadingWhitespaceCharCount × font.maximumAdvancement.width` — per-line paragraph styles so continuation lines align to the first non-whitespace character.
+- Truncation notes rendered at 40% alpha foreground.
 
-### In-preview chrome (ToolbarRenderer)
+**NativeCodePreviewController** wraps an `NSScrollView + NSTextView` (TextKit1 stack with explicit `NSTextStorage / NSLayoutManager / NSTextContainer`). Wrap toggle changes `textContainer.size.width` between `CGFloat.greatestFiniteMagnitude` (no wrap) and the scroll view's content width (wrap). A native `NSButton` overlay in the top-right corner drives the toggle.
 
-`ToolbarRenderer` owns the two UI affordances that live inside the WKWebView:
+### In-preview chrome (Markdown WKWebView only)
 
-- **Preview/Code pill** — markdown only. Sits in `#ql-toolbar` (a flex bar at the top of the page, emitted only by `MarkdownRenderer`). Drives the view toggle via hidden radio inputs + `:checked` sibling selectors.
-- **Wrap overlay** — a floating `<label for="ql-wrap">` button, fed by a hidden checkbox. It uses `position: absolute; top: 6px; right: 6px` and is placed *inside* the content container (`#ql-content` for code files, `#ql-view-code` for markdown). One rule, two contexts — do not re-introduce per-context `top` overrides. In markdown, nesting inside `#ql-view-code` means the label inherits that subtree's `display: none` during preview mode, so it's only visible in code view without any extra CSS.
+`ToolbarRenderer` generates HTML/CSS for the two affordances inside the **markdown prose WKWebView** (`MarkdownPreviewController`):
 
-Because the label is no longer a DOM sibling of `#ql-wrap` (the checkbox stays at body level so `#ql-wrap:checked ~ #ql-content .line` still applies wrap styling), the checked-state rule uses `body:has(#ql-wrap:checked) .ql-wrap-btn { … }`. `:has()` is required — don't revert to `~`.
-
-The wrap overlay's colors come from CSS custom properties (`--wrap-bg`, `--wrap-fg`, `--wrap-bg-checked`, `--wrap-shadow`, etc.) set per-render by `ToolbarRenderer.wrapColorVariables(for: theme)`, which both renderers inject into a `:root { … }` rule. The theme's `isDark` flag **only** picks between two fixed palettes — the palette values are *not* mixed from `theme.background` / `theme.foreground`. Do not re-introduce color mixing; that was tried and rejected.
+- **Preview/Code pill** (`NSSegmentedControl`) — native AppKit control in `MarkdownPreviewController`; switches between `WKWebView` (prose) and `NSTextView` (source) visibility. No longer a CSS radio-input hack.
+- **Wrap overlay** — native `NSButton` inside `NativeCodePreviewController` and `MarkdownPreviewController`'s source `NSTextView` container. The WKWebView prose tab has no wrap button.
 
 The toolbar is hidden / scaled down in the Finder column-view preview and shown at full size in the dedicated Quick Look window.
 
@@ -229,22 +232,27 @@ Both vendor directories are added to `SWIFT_INCLUDE_PATHS` and `USER_HEADER_SEAR
 
 ### Quick Look Reply
 
-The extension uses **view-based preview** (`QLIsDataBasedPreview: false` in `Info.plist`). `PreviewViewController` loads the rendered HTML into a `WKWebView`. View-based was chosen to enable keyboard shortcut support and future interactive affordances (the earlier data-based path using `QLPreviewReply(.html)` has been removed).
+The extension uses **view-based preview** (`QLIsDataBasedPreview: false` in `Info.plist`). View-based was chosen to enable keyboard shortcut support (the earlier data-based path using `QLPreviewReply(.html)` has been removed). `PreviewViewController` installs the appropriate child view controller into its container `NSView`.
 
-**WKWebView entitlement**: the sandboxed `WKWebView` requires `com.apple.security.network.client` in both entitlement files even when only loading local HTML strings — without it the web content process crashes silently and the preview renders blank.
+**WKWebView entitlement**: the sandboxed `WKWebView` (used for markdown prose) requires `com.apple.security.network.client` in both entitlement files even when only loading local HTML strings — without it the web content process crashes silently and the preview renders blank.
 
 ### Markdown two-phase render
 
-For `.md` / `.markdown` files the visible markdown preview is decoupled from the Code-tab source view:
+`MarkdownPreviewController` hosts an `NSSegmentedControl` (Preview / Source toggle), a `WKWebView` for prose, and an `NSTextView` for the highlighted source.
 
-1. **Fast phase** — `MarkdownRenderer.render(...)` returns a `RenderResult { html, markdown }`. The `html` contains the fully-rendered prose (cmark-gfm + fenced-block highlighting), plus a **cheap plain-text placeholder** inside `<div id="ql-source-slot">` for the Code tab. No tokenizer work for the Source tab. `WKWebView.loadHTMLString` fires immediately.
-2. **Deferred phase** — in `WKNavigationDelegate.webView(_:didFinish:)`, the VC reads the `MarkdownSourceContext` stashed during the fast phase, calls `MarkdownRenderer.renderSourceHTML(markdown:theme:ide:)` on a Task, and injects the tokenized `<pre><code>` fragment via `webView.callAsyncJavaScript("document.getElementById('ql-source-slot').innerHTML = html;", arguments: ["html": sourceHTML], …)`. WKWebView's argument bridge passes the HTML as a JS value — no hand-escaping, no injection surface.
+1. **Fast phase** — `MarkdownRenderer.render(...)` returns `RenderResult { html: Data, markdown: String }`. `MarkdownPreviewController.showProse(html:theme:)` calls `WKWebView.loadHTMLString` immediately. `showSourcePlaceholder(_:theme:)` populates the NSTextView with a plain-text `NSAttributedString` so it's not blank if the user switches tabs before tokenization finishes.
+2. **Deferred phase** — after `renderCode` returns, `MarkdownRenderer.tokenizeSource(markdown:theme:ide:)` runs on a `Task`, then `showSource(tokens:theme:)` replaces the NSTextView content with the fully tokenized `NSAttributedString`.
 
-**Why the slot lives inside `#ql-view-code`**: the wrap overlay button (`ToolbarRenderer.wordWrapOverlayHTML`) is a DOM sibling of the slot inside `#ql-view-code`. Targeting `innerHTML` of the whole `#ql-view-code` would wipe the wrap button. The slot isolates the swap to just the source-view content.
+**Task cancellation**: `preparePreviewOfFile` and its sub-renderers check `Task.isCancelled` at each await-boundary. Silent early-return (`if Task.isCancelled { return }`, not `try Task.checkCancellation()`) avoids the QL "Failed to load preview" error banner. Do not drop these checks — they prevent stacked tokenize requests from blocking the actor queue during rapid space-bar presses.
 
-**Why placeholder uses `.line` spans with matching `<pre>` styling**: the word-wrap CSS rule (`#ql-wrap:checked ~ #ql-content .line { white-space: pre-wrap }`) keys off `.line`. The tokenized version also emits `.line` spans, so wrap state carries over the swap without layout jump.
+### Design decisions reference
 
-**Task cancellation**: `preparePreviewOfFile` and its sub-renderers check `Task.isCancelled` at each await-boundary. When Quick Look dismisses a preview mid-render (user hits space again quickly), the in-flight task bails early instead of fighting for the `TokenizerEngine` actor queue against the replacement preview. Do not drop these checks.
+`DESIGN_DECISIONS.md` documents load-bearing constraints that look like dead code but must not be removed:
+- **Horizontal scroll JS fix** — reads `#ql-content.offsetHeight` and sets it as inline `minHeight` on `<pre>`. Without this, scroll events are dropped in short files. (WKWebView / markdown prose only.)
+- **Right-edge padding** — CSS trailing padding does not extend WebKit scroll extent; the issue is unfixed and documented as a known limitation.
+- **JS availability** — `evaluateJavaScript` works in Quick Look's WKWebView; the old comment claiming JS was disabled was incorrect.
+- **L3 cache fallback on ad-hoc builds** — do not gate cache writes on App Group availability; the per-process caches-dir fallback is speed-critical for end users.
+- **Task cancellation pattern** — see above; silent return over throwing is intentional.
 
 ## Current Status
 
@@ -252,7 +260,7 @@ For `.md` / `.markdown` files the visible markdown preview is decoupled from the
 - **Phase 1** (IDE Integration) ✅ — IDELocator, GrammarLoader, ThemeLoader complete; ContentView shows live theme info
 - **Phase 2** (Tokenization + HTML output) ✅ — JSC-based vscode-textmate pipeline, HTMLRenderer, FileTypeRegistry
 - **Phase 2.5** (Native library migration) ✅ — `tokenizeLine2` for internal color resolution; native oniguruma C library replacing JS regex shim; `TokenMapper` deleted
-- **Phase 3** (Markdown renderer with cmark-gfm) ✅ — `MarkdownRenderer.swift`, `markdown-styles.css`, cmark-gfm vendored; prose and toolbar chrome both follow the active VS Code theme (via `--md-bg` / `--md-fg` + `color-mix()`), code blocks use inline theme colors
+- **Phase 3** (NSTextView renderer) ✅ — `NativeCodePreviewController` + `TextKitRenderer` replace WKWebView for code files; `MarkdownPreviewController` hosts WKWebView prose + NSTextView source with native `NSSegmentedControl` tab switcher; `MarkdownRenderer.swift`, `markdown-styles.css`, cmark-gfm vendored
 - **Phase 4** (`.ts` TypeScript preview) — **not achievable** via QL extension API; see PLAN.md
 - **Phase 4.5** (Performance — multi-layer caching) ✅ — `CacheManager`, `TokenizerEngine` actor, `SharedWebProcessPool`, grammar index, pre-serialized theme JSON, host app Refresh button
 - **Phase 5** (FSEventStream theme watching, font sync, line numbers) — planned
