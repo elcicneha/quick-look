@@ -20,12 +20,12 @@ Press Space on any code file in Finder and get a preview that actually looks lik
 Peekaboo is not notarized (no paid Apple Developer account), so macOS Gatekeeper will refuse to open it by default. Stripping the quarantine attribute tells Gatekeeper the app didn't come from the internet and lets it launch.
 
 1. Download the latest `Peekaboo-v*.zip` from [Releases](../../releases) and unzip it.
-2. Run these four lines in Terminal. If you extracted somewhere other than `~/Downloads`, update the path in the first line:
+2. Run these lines in Terminal. If you extracted somewhere other than `~/Downloads`, update the path in the first line:
 
    ```bash
-   mv ~/Downloads/Peekaboo.app /Applications/
+   killall Peekaboo 2>/dev/null
+   rm -rf /Applications/Peekaboo.app && mv ~/Downloads/Peekaboo.app /Applications/
    xattr -dr com.apple.quarantine /Applications/Peekaboo.app
-   open /Applications/Peekaboo.app
    qlmanage -r && killall -HUP Finder
    ```
 
