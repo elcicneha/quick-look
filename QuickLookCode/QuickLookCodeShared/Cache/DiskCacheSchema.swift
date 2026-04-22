@@ -12,7 +12,7 @@ enum DiskCacheSchema {
 
     // Increment this when any Codable struct below changes OR when the on-disk
     // index needs to be rebuilt for any reason (e.g. fixing grammar resolution).
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     static let appGroup = "group.com.nehagupta.quicklookcode"
     static let dirName  = "quicklookcode"

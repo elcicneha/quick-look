@@ -66,11 +66,12 @@ actor TokenizerEngine {
         language: String,
         grammarJSON: String,
         siblingGrammarsJSON: String,
+        injectionsJSON: String,
         themeJSON: String
     ) -> [[SourceCodeRenderer.RawToken]] {
         if loadedLanguage != language || loadedThemeJSON != themeJSON {
             context.objectForKeyedSubscript("initGrammar")?
-                .call(withArguments: [grammarJSON, themeJSON, siblingGrammarsJSON])
+                .call(withArguments: [grammarJSON, themeJSON, siblingGrammarsJSON, injectionsJSON])
             loadedLanguage = language
             loadedThemeJSON = themeJSON
         }

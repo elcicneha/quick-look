@@ -72,7 +72,7 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Grammar not found for \(entry.displayName)")
             return
         }
-        let siblingGrammars = LanguageIndex.siblingGrammarData(for: entry)
+        let siblingGrammars = LanguageIndex.supportingGrammars(for: entry)
         guard let theme = try? ThemeLoader.loadActiveTheme(from: ide) else {
             await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Theme could not be loaded")
             return
@@ -95,6 +95,7 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             language: entry.languageId,
             grammarData: grammar,
             siblingGrammars: siblingGrammars,
+            injections: LanguageIndex.injectionsForTarget,
             theme: theme
         ) else { return }
 

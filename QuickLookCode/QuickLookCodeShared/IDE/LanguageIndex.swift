@@ -37,9 +37,17 @@ public enum LanguageIndex {
         /// scope name → absolute grammar path; covers injection / include-only grammars too
         let byScopeName: [String: String]
         /// extensionRoot absolute path → absolute paths of every grammar declared by that
-        /// extension. Used by `siblingGrammarData` to include helper grammars bundled
+        /// extension. Used by `supportingGrammars` to include helper grammars bundled
         /// alongside the main one (e.g. yaml's `yaml-1.2`, `yaml-embedded`, …).
         let grammarsByExtension: [String: [String]]
+        /// Reverse of `grammarsByExtension` — grammar path → owning extensionRoot.
+        /// Needed to find an injection grammar's siblings without linear search.
+        let pathToExtensionRoot: [String: String]
+        /// Target scope name → scope names of injection grammars that declare
+        /// `injectTo` for that target. vscode-textmate's Registry uses this to
+        /// activate injections during tokenization (e.g. HTML inside JS template
+        /// literals, shell inside Dockerfile RUN, JSDoc inside /** */ blocks).
+        let injectionsForTarget: [String: [String]]
     }
 
     // MARK: - In-memory state (process lifetime, seeded by CacheManager)
@@ -76,24 +84,53 @@ public enum LanguageIndex {
         return data
     }
 
-    /// Grammars declared by the SAME extension as `entry` (excluding `entry` itself).
-    /// Passed to `vscode-textmate` as sibling grammars so cross-grammar `include`
-    /// references (e.g. yaml → yaml-embedded) resolve correctly. Scoped by the
-    /// extension's `package.json` — not by filesystem directory — so we no longer
-    /// pass unrelated `.json` files that happen to sit next to the grammar.
-    public static func siblingGrammarData(for entry: Entry) -> [Data] {
-        guard let paths = _snapshot?.grammarsByExtension[entry.extensionRoot] else { return [] }
-        var out: [Data] = []
-        for path in paths where path != entry.grammarPath {
-            if let cached = _dataCache[path] {
-                out.append(cached); continue
-            }
-            if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
-                _dataCache[path] = data
-                out.append(data)
+    /// All grammar data the tokenizer may need in addition to `entry`'s main grammar.
+    /// Collects, in order (deduplicated by path):
+    ///   1. `entry`'s same-extension siblings — cross-grammar `include` references
+    ///      bundled with the main grammar (e.g. yaml's `yaml-1.2`, `yaml-embedded`).
+    ///   2. Injection grammars that declare `injectTo` for `entry.scopeName` —
+    ///      HTML-in-JS template literals, shell-in-Dockerfile RUN, JSDoc, etc.
+    ///   3. Each injection's own same-extension siblings — so scope-name `include`s
+    ///      inside the injection grammar resolve (the injection and its supporting
+    ///      grammars are typically packaged in the same extension).
+    /// Returned data is passed to `vscode-textmate`'s `Registry.loadGrammar` via the
+    /// scopeName-keyed map built in the tokenizer JS.
+    public static func supportingGrammars(for entry: Entry) -> [Data] {
+        guard let snap = _snapshot else { return [] }
+
+        var orderedPaths: [String] = []
+        var seen = Set<String>()
+        seen.insert(entry.grammarPath)
+
+        // 1. Same-extension siblings
+        for path in snap.grammarsByExtension[entry.extensionRoot] ?? [] {
+            if seen.insert(path).inserted { orderedPaths.append(path) }
+        }
+
+        // 2 + 3. Injection grammars for this entry's scope + their same-extension siblings
+        let injectionScopes = snap.injectionsForTarget[entry.scopeName] ?? []
+        for injScope in injectionScopes {
+            guard let injPath = snap.byScopeName[injScope] else { continue }
+            if seen.insert(injPath).inserted { orderedPaths.append(injPath) }
+            guard let injExtRoot = snap.pathToExtensionRoot[injPath] else { continue }
+            for path in snap.grammarsByExtension[injExtRoot] ?? [] {
+                if seen.insert(path).inserted { orderedPaths.append(path) }
             }
         }
-        return out
+
+        return orderedPaths.compactMap { path in
+            if let cached = _dataCache[path] { return cached }
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+            _dataCache[path] = data
+            return data
+        }
+    }
+
+    /// The full target→injection-scopes map, to be passed to the tokenizer so
+    /// `vscode-textmate`'s `Registry.getInjections` callback can resolve injections
+    /// for any scope encountered during tokenization (not just the root scope).
+    public static var injectionsForTarget: [String: [String]] {
+        _snapshot?.injectionsForTarget ?? [:]
     }
 
     // MARK: - Bootstrap / invalidation (called by CacheManager)
@@ -119,6 +156,8 @@ public enum LanguageIndex {
         var byLangId: [String: Entry] = [:]
         var byScope: [String: String] = [:]
         var grammarsByExt: [String: [String]] = [:]
+        var pathToExtRoot: [String: String] = [:]
+        var injectionsForTarget: [String: [String]] = [:]
 
         let fm = FileManager.default
         for root in [ide.builtinExtensionsURL, ide.userExtensionsURL] {
@@ -135,7 +174,9 @@ public enum LanguageIndex {
                     byFilename: &byFilename,
                     byLanguageId: &byLangId,
                     byScopeName: &byScope,
-                    grammarsByExtension: &grammarsByExt
+                    grammarsByExtension: &grammarsByExt,
+                    pathToExtensionRoot: &pathToExtRoot,
+                    injectionsForTarget: &injectionsForTarget
                 )
             }
         }
@@ -145,7 +186,9 @@ public enum LanguageIndex {
             byFilename: byFilename,
             byLanguageId: byLangId,
             byScopeName: byScope,
-            grammarsByExtension: grammarsByExt
+            grammarsByExtension: grammarsByExt,
+            pathToExtensionRoot: pathToExtRoot,
+            injectionsForTarget: injectionsForTarget
         )
     }
 
@@ -165,7 +208,9 @@ public enum LanguageIndex {
         byFilename: inout [String: Entry],
         byLanguageId: inout [String: Entry],
         byScopeName: inout [String: String],
-        grammarsByExtension: inout [String: [String]]
+        grammarsByExtension: inout [String: [String]],
+        pathToExtensionRoot: inout [String: String],
+        injectionsForTarget: inout [String: [String]]
     ) {
         let pkgURL = extDir.appendingPathComponent("package.json")
         guard
@@ -220,6 +265,21 @@ public enum LanguageIndex {
             if !list.contains(absPath) {
                 list.append(absPath)
                 grammarsByExtension[extRoot] = list
+            }
+            if pathToExtensionRoot[absPath] == nil {
+                pathToExtensionRoot[absPath] = extRoot
+            }
+
+            // Injection grammar? (`injectTo` declares which target scopes should
+            // activate this grammar as an injection during tokenization.)
+            if let injectTo = g["injectTo"] as? [String] {
+                for target in injectTo where !target.isEmpty {
+                    var targets = injectionsForTarget[target] ?? []
+                    if !targets.contains(scopeName) {
+                        targets.append(scopeName)
+                        injectionsForTarget[target] = targets
+                    }
+                }
             }
 
             // Language-bound grammar?

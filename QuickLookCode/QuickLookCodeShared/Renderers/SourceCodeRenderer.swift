@@ -84,6 +84,7 @@ public enum SourceCodeRenderer {
         language: String,
         grammarData: Data,
         siblingGrammars: [Data] = [],
+        injections: [String: [String]] = [:],
         theme: ThemeData
     ) async throws -> [[RawToken]] {
         guard let grammarJSON = String(data: grammarData, encoding: .utf8) else {
@@ -102,11 +103,15 @@ public enum SourceCodeRenderer {
         let siblingGrammarsJSON = (try? JSONSerialization.data(withJSONObject: siblingJSONStrings))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
 
+        let injectionsJSON = (try? JSONSerialization.data(withJSONObject: injections))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+
         return await TokenizerEngine.shared.tokenize(
             code: code,
             language: language,
             grammarJSON: grammarJSON,
             siblingGrammarsJSON: siblingGrammarsJSON,
+            injectionsJSON: injectionsJSON,
             themeJSON: themeJSON
         )
     }

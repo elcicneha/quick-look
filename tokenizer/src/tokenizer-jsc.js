@@ -13,7 +13,12 @@
  * compatible with VS Code's tokenizer.
  *
  * Swift protocol:
- *   1. globalThis.initGrammar(grammarJSON: string, themeJSON: string)
+ *   1. globalThis.initGrammar(
+ *         grammarJSON: string,
+ *         themeJSON: string,
+ *         siblingGrammarsJSON: string,   // JSON array of grammar JSON strings
+ *         injectionsJSON: string         // JSON object: targetScope → [injectionScope]
+ *      )
  *   2. (JSC drains microtasks automatically after the call returns)
  *   3. globalThis.doTokenize(code: string)
  *        → Array<Array<{text, color, fontStyle}>>
@@ -43,7 +48,7 @@ const FOREGROUND_MASK = 0x1FF;
 let _grammar = null;
 let _colorMap = null;
 
-globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON, siblingGrammarsJSON) {
+globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON, siblingGrammarsJSON, injectionsJSON) {
     _grammar = null;
     _colorMap = null;
 
@@ -71,9 +76,10 @@ globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON, siblingGra
 
     const scopeName = grammarDef.scopeName;
 
-    // Build a map of all known grammars (main + siblings) keyed by scopeName.
-    // This allows vscode-textmate to resolve cross-grammar `include` references
-    // such as `source.yaml.embedded` or `source.yaml.1.2`.
+    // Build a map of all known grammars (main + siblings + injections) keyed by
+    // scopeName. This allows vscode-textmate to resolve cross-grammar `include`
+    // references such as `source.yaml.embedded` or `source.yaml.1.2`, and to
+    // load injection grammars returned from `getInjections`.
     const grammarMap = new Map();
     grammarMap.set(scopeName, grammarDef);
     if (siblingGrammarsJSON) {
@@ -89,9 +95,27 @@ globalThis.initGrammar = function initGrammar(grammarJSON, themeJSON, siblingGra
         }
     }
 
+    // Injection map: target scope → [injection scope names]. When the Registry
+    // tokenizes a span at scope T, it calls getInjections(T) and merges the
+    // returned grammars' patterns based on their `injectionSelector`. This is
+    // how HTML-inside-JS-template-literals, shell-inside-Dockerfile-RUN, and
+    // JSDoc-inside-/** */ end up with language-specific colors.
+    let injectionsMap = null;
+    if (injectionsJSON) {
+        try {
+            const parsed = JSON.parse(injectionsJSON);
+            if (parsed && typeof parsed === "object") injectionsMap = parsed;
+        } catch (e) {
+            console.error("initGrammar: failed to parse injectionsJSON: " + e.message);
+        }
+    }
+
     const registry = new Registry({
         onigLib: Promise.resolve(globalThis.onigLib),
         loadGrammar: (name) => Promise.resolve(grammarMap.get(name) ?? null),
+        getInjections: injectionsMap
+            ? (name) => injectionsMap[name]
+            : undefined,
     });
 
     if (theme) {

@@ -97,9 +97,10 @@ public enum MarkdownRenderer {
         guard let entry = LanguageIndex.entry(forExtension: "md") else { return nil }
         guard let grammarData = LanguageIndex.grammarData(for: entry) else { return nil }
 
-        // Load sibling grammars for every fenced language so vscode-textmate
-        // can highlight embedded code blocks with per-language colors.
-        var siblingGrammars = LanguageIndex.siblingGrammarData(for: entry)
+        // Load supporting grammars for markdown (same-extension siblings + injections
+        // targeting `text.html.markdown` + those injections' siblings), plus per-fence
+        // grammars so embedded code blocks tokenize with per-language colors.
+        var siblingGrammars = LanguageIndex.supportingGrammars(for: entry)
         var loadedScopes = Set<String>()
         loadedScopes.insert(entry.scopeName)
         for lang in extractFencedLanguages(from: markdown) {
@@ -108,7 +109,7 @@ public enum MarkdownRenderer {
             loadedScopes.insert(fencedEntry.scopeName)
             if let gData = LanguageIndex.grammarData(for: fencedEntry) {
                 siblingGrammars.append(gData)
-                siblingGrammars.append(contentsOf: LanguageIndex.siblingGrammarData(for: fencedEntry))
+                siblingGrammars.append(contentsOf: LanguageIndex.supportingGrammars(for: fencedEntry))
             }
         }
 
@@ -117,6 +118,7 @@ public enum MarkdownRenderer {
             language: entry.languageId,
             grammarData: grammarData,
             siblingGrammars: siblingGrammars,
+            injections: LanguageIndex.injectionsForTarget,
             theme: theme
         )
     }
@@ -315,10 +317,11 @@ private extension MarkdownRenderer {
         guard let entry = LanguageIndex.entry(forFenceTag: lang) else { return plainFallback }
         guard let grammarData = LanguageIndex.grammarData(for: entry) else { return plainFallback }
 
-        // Siblings satisfy cross-grammar `include` references (e.g. yaml
-        // splits into yaml.tmLanguage + yaml-1.x + yaml-embedded). Without
-        // them tokenization comes back empty for multi-file grammars.
-        let siblings = LanguageIndex.siblingGrammarData(for: entry)
+        // Supporting grammars satisfy cross-grammar `include` references (yaml
+        // splits into yaml.tmLanguage + yaml-1.x + yaml-embedded; without them
+        // tokenization comes back empty for multi-file grammars) and carry
+        // injection grammars targeting this fence language.
+        let siblings = LanguageIndex.supportingGrammars(for: entry)
 
         // Tokenize via shared TokenizerEngine (reuses warm JSContext)
         guard let rawLines = try? await SourceCodeRenderer.tokenize(
@@ -326,6 +329,7 @@ private extension MarkdownRenderer {
             language: entry.languageId,
             grammarData: grammarData,
             siblingGrammars: siblings,
+            injections: LanguageIndex.injectionsForTarget,
             theme: theme
         ) else { return plainFallback }
 
