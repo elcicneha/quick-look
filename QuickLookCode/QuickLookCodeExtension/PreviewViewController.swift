@@ -57,7 +57,10 @@ class PreviewViewController: NSViewController, QLPreviewingController {
     // MARK: - Code render path
 
     private func renderCode(fileURL: URL, fileName: String, ext: String) async {
-        guard let langInfo = FileTypeRegistry.language(forExtension: ext) else {
+        // Resolve by file extension; fall back to exact filename match (Dockerfile, Makefile, ...).
+        let entry = LanguageIndex.entry(forExtension: ext)
+            ?? LanguageIndex.entry(forFilename: fileURL.lastPathComponent)
+        guard let entry else {
             await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Unsupported file type")
             return
         }
@@ -65,12 +68,11 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "VS Code not found")
             return
         }
-        let grammarLoader = GrammarLoader(ide: ide)
-        guard let grammar = (try? grammarLoader.grammarData(for: langInfo.grammarSearch)) ?? nil else {
-            await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Grammar not found for \(langInfo.displayName)")
+        guard let grammar = LanguageIndex.grammarData(for: entry) else {
+            await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Grammar not found for \(entry.displayName)")
             return
         }
-        let siblingGrammars = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+        let siblingGrammars = LanguageIndex.siblingGrammarData(for: entry)
         guard let theme = try? ThemeLoader.loadActiveTheme(from: ide) else {
             await showPlainTextFallback(fileURL: fileURL, fileName: fileName, reason: "Theme could not be loaded")
             return
@@ -90,7 +92,7 @@ class PreviewViewController: NSViewController, QLPreviewingController {
 
         guard let tokens = try? await SourceCodeRenderer.tokenize(
             code: content,
-            language: langInfo.grammarSearch,
+            language: entry.languageId,
             grammarData: grammar,
             siblingGrammars: siblingGrammars,
             theme: theme
@@ -121,7 +123,6 @@ class PreviewViewController: NSViewController, QLPreviewingController {
             let result = try? await MarkdownRenderer.render(
                 fileURL: fileURL,
                 theme: theme,
-                ide: ide,
                 fileName: fileName
             ),
             let html = String(data: result.html, encoding: .utf8)
@@ -141,7 +142,7 @@ class PreviewViewController: NSViewController, QLPreviewingController {
         if Task.isCancelled { return }
 
         // Deferred: tokenize the markdown source for the native Source tab.
-        if let tokens = await MarkdownRenderer.tokenizeSource(markdown: markdown, theme: theme, ide: ide) {
+        if let tokens = await MarkdownRenderer.tokenizeSource(markdown: markdown, theme: theme) {
             if Task.isCancelled { return }
             await MainActor.run { [weak mdVC] in
                 mdVC?.showSource(tokens: tokens, theme: theme)

@@ -116,7 +116,10 @@ file extension
 
 ```
 IDELocator.preferred → IDEInfo (app URL, settings URL, extension paths)
-    ├── GrammarLoader(ide) → grammarData(for: "python") → Data (TextMate JSON)
+    ├── LanguageIndex (built once at bootstrap from every extension's package.json)
+    │       entry(forExtension: "py") → Entry { languageId, scopeName, grammarPath, … }
+    │       grammarData(for: entry) → Data (TextMate JSON)
+    │       siblingGrammarData(for: entry) → [Data] (other grammars from the same extension)
     └── ThemeLoader.loadActiveTheme(from: ide) → ThemeData
             └── serializeTheme(ThemeData) → IRawTheme JSON → vscode-textmate registry.setTheme
 ```
@@ -135,13 +138,21 @@ Any new file paths the extension needs to read must be added to both `QuickLookC
 
 ### IDE Abstraction
 
-The project supports both **VS Code** and **Antigravity** (a VS Code fork). `IDEInfo` holds all paths for a given IDE. `IDELocator.preferred` returns the user's picker choice (stored in shared App Group `UserDefaults` under the `selectedIDE` key — visible to both host app and extension) when that IDE is installed; otherwise the first IDE found in catalog order. The host app's `ContentView` shows the picker only when ≥2 IDEs are installed. All downstream code (GrammarLoader, ThemeLoader) takes an `IDEInfo` — never hardcode VS Code paths.
+The project supports both **VS Code** and **Antigravity** (a VS Code fork). `IDEInfo` holds all paths for a given IDE. `IDELocator.preferred` returns the user's picker choice (stored in shared App Group `UserDefaults` under the `selectedIDE` key — visible to both host app and extension) when that IDE is installed; otherwise the first IDE found in catalog order. The host app's `ContentView` shows the picker only when ≥2 IDEs are installed. `ThemeLoader` takes an `IDEInfo` directly; `LanguageIndex` is built once per IDE at cache bootstrap and queried globally thereafter. Never hardcode VS Code paths.
 
 **Theme dark/light classification** (`ThemeLoader.classifyIsDark`): prefers the theme JSON's own `type` field if present, otherwise falls back to the `uiTheme` field from the extension's `package.json` contribution (`"vs"`/`"hc-light"` = light, everything else = dark). VS Code's built-in themes (e.g. `light_modern.json`) omit `type` entirely and rely on `uiTheme` — a naive `type ?? "dark"` default would mis-classify every one of them as dark.
 
 ### Token Scope Matching
 
 Scope→color resolution is handled entirely by `vscode-textmate` internally via `tokenizeLine2`. The library's registry resolves descendant selectors, parent selectors, exclusion selectors, and specificity scoring identically to VS Code. `TokenMapper.swift` has been deleted — there is no Swift-side scope matching.
+
+### Grammar Resolution (LanguageIndex)
+
+Grammars are resolved the same way VS Code resolves them: by reading each extension's `package.json` contributions. At cache bootstrap `LanguageIndex.build(from:)` walks every directory under `builtinExtensionsURL` and `userExtensionsURL`, reads each `package.json`, and joins `contributes.languages[]` (id, aliases, extensions, filenames) with `contributes.grammars[]` (language, scopeName, path). Built-ins are processed first and win on collision, matching VS Code's precedence.
+
+The resulting snapshot is persisted to `language-index.json` and exposes four lookups — by file extension, by exact filename (Dockerfile / Makefile / zshrc), by markdown fence tag (matches language id OR alias, so `` ```py `` → Python, `` ```bash `` → Shell), and by scope name (for cross-grammar `include` resolution). Sibling grammars are scoped by the grammar's owning extension, not by filesystem directory — i.e. "grammars declared in the same `package.json`."
+
+**Do not reintroduce filename fuzzy matching.** Earlier implementations resolved grammars by searching for a filename stem containing a hardcoded search term, which repeatedly broke (`powershell.tmLanguage` beating `shell-unix-bash.tmLanguage` on "shell"; `cshtml` beating `html` on "html"). `FileTypeRegistry` and `GrammarLoader` have been deleted; the `contributes.languages`/`contributes.grammars` join is the only correct resolver.
 
 ### Caching Architecture
 
@@ -151,12 +162,13 @@ Three layers eliminate redundant work between previews:
 L3 — On-disk cache (survives process death)
      Primary location: App Group container (shared between host + extension)
      Fallback:         the calling process's own sandbox caches dir
+     Files:            manifest.json, ide.json, theme.json, language-index.json
      CacheManager.bootstrap() reads or rebuilds on first call.
      Invalidated by: IDE app mtime change, settings.json mtime change, schema bump, Refresh button.
 
 L2 — Process-lifetime in-memory singletons
      IDELocator._cached, ThemeLoader._cachedTheme / _cachedSerializedTheme,
-     GrammarLoader static URL/data/sibling caches.
+     LanguageIndex._snapshot + path→data cache.
      Survive across space-bar presses while macOS keeps the extension host warm.
 
 L1 — Per-render work (always runs)
@@ -165,7 +177,7 @@ L1 — Per-render work (always runs)
 
 **CacheManager** (`Cache/CacheManager.swift`) orchestrates bootstrap and refresh. Call `CacheManager.bootstrap()` before every render — the hot path is a single atomic boolean check (`_loadedCacheVersion != nil && !_needsReload`), no disk I/O. The host app's **Refresh** button calls `CacheManager.refresh()` to force a full rebuild — use this after changing the IDE theme.
 
-**L3 location**: `CacheManager.cacheDir` prefers the App Group container; on ad-hoc-signed builds (no App Group entitlement) `containerURL(forSecurityApplicationGroupIdentifier:)` returns nil and it falls back to `FileManager.urls(for: .cachesDirectory, in: .userDomainMask)` — each sandboxed process's own `~/Library/Containers/<bundle-id>/Data/Library/Caches/quicklookcode/`. Without this fallback, end-users' extensions would rebuild from a full extension-directory walk on every cold launch (theme registry + grammar search, 100–400 ms). Do not remove the fallback.
+**L3 location**: `CacheManager.cacheDir` prefers the App Group container; on ad-hoc-signed builds (no App Group entitlement) `containerURL(forSecurityApplicationGroupIdentifier:)` returns nil and it falls back to `FileManager.urls(for: .cachesDirectory, in: .userDomainMask)` — each sandboxed process's own `~/Library/Containers/<bundle-id>/Data/Library/Caches/quicklookcode/`. Without this fallback, end-users' extensions would rebuild from a full extension-directory walk on every cold launch (theme registry + language-index scan of every extension's `package.json`, 100–400 ms). Do not remove the fallback.
 
 **Cross-process invalidation via Darwin notifications**: the host app and Quick Look extension are separate processes with separate L2 singletons. `CacheManager.refresh()` rebuilds L3 locally, then posts a Darwin notification (`CFNotificationCenterGetDarwinNotifyCenter`). Every process that called `bootstrap()` installs a `CFNotificationCenterAddObserver` on first call; the handler flips `_needsReload` so the next `bootstrap()` either swaps L2 from the fresh L3 via one `loadFromDisk()` (shared-cache path) or force-rebuilds its own L3 (unshared-cache path, because each process writes its own container). Behaviour is selected at runtime by `cacheIsShared`. No polling, microsecond latency. On ad-hoc builds the notification is silently dropped by the sandbox (the name is app-group-prefixed but the process isn't in the group), so `mtime` checks against IDE app + `settings.json` become the sole invalidation signal — still correct for theme changes since VS Code rewrites `settings.json` when the user picks a new theme.
 
@@ -180,7 +192,7 @@ L1 — Per-render work (always runs)
 ```
 CacheManager.bootstrap()
     → IDELocator._cached / ThemeLoader._cachedTheme (L2 hit — no disk I/O)
-    → GrammarLoader.grammarData(for:) (L2 static cache hit after first use)
+    → LanguageIndex.entry(forExtension:) + grammarData(for:) (L2 hit after first use)
 
 SourceCodeRenderer.tokenize(code:language:grammarData:theme:)
     → TokenizerEngine.shared.tokenize(...)  ← shared JSContext (actor)

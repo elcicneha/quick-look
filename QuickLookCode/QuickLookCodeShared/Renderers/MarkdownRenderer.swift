@@ -46,7 +46,6 @@ public enum MarkdownRenderer {
     public static func render(
         fileURL: URL,
         theme: ThemeData,
-        ide: IDEInfo,
         fileName: String
     ) async throws -> RenderResult {
         // 1. Read source
@@ -68,7 +67,7 @@ public enum MarkdownRenderer {
         let anchoredHTML = addHeadingAnchors(in: rawHTML)
 
         // 4. Highlight fenced code blocks with VS Code theme
-        let highlightedHTML = await highlightCodeBlocks(in: anchoredHTML, theme: theme, ide: ide)
+        let highlightedHTML = await highlightCodeBlocks(in: anchoredHTML, theme: theme)
 
         // 5. Resolve relative images → data URIs
         let resolvedHTML = resolveImages(in: highlightedHTML, baseURL: fileURL.deletingLastPathComponent())
@@ -93,30 +92,29 @@ public enum MarkdownRenderer {
     /// caller can keep the plain-text placeholder.
     public static func tokenizeSource(
         markdown: String,
-        theme: ThemeData,
-        ide: IDEInfo
+        theme: ThemeData
     ) async -> [[SourceCodeRenderer.RawToken]]? {
-        guard let langInfo = FileTypeRegistry.language(forExtension: "md") else { return nil }
-        let grammarLoader = GrammarLoader(ide: ide)
-        guard let grammarData = try? grammarLoader.grammarData(for: langInfo.grammarSearch) else { return nil }
+        guard let entry = LanguageIndex.entry(forExtension: "md") else { return nil }
+        guard let grammarData = LanguageIndex.grammarData(for: entry) else { return nil }
 
         // Load sibling grammars for every fenced language so vscode-textmate
         // can highlight embedded code blocks with per-language colors.
-        var siblingGrammars = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+        var siblingGrammars = LanguageIndex.siblingGrammarData(for: entry)
         var loadedScopes = Set<String>()
+        loadedScopes.insert(entry.scopeName)
         for lang in extractFencedLanguages(from: markdown) {
-            let fencedLangInfo = FileTypeRegistry.language(forCodeFenceTag: lang)
-            guard !loadedScopes.contains(fencedLangInfo.grammarSearch) else { continue }
-            loadedScopes.insert(fencedLangInfo.grammarSearch)
-            if let gData = try? grammarLoader.grammarData(for: fencedLangInfo.grammarSearch) {
+            guard let fencedEntry = LanguageIndex.entry(forFenceTag: lang) else { continue }
+            guard !loadedScopes.contains(fencedEntry.scopeName) else { continue }
+            loadedScopes.insert(fencedEntry.scopeName)
+            if let gData = LanguageIndex.grammarData(for: fencedEntry) {
                 siblingGrammars.append(gData)
-                siblingGrammars.append(contentsOf: grammarLoader.siblingGrammarData(for: fencedLangInfo.grammarSearch))
+                siblingGrammars.append(contentsOf: LanguageIndex.siblingGrammarData(for: fencedEntry))
             }
         }
 
         return try? await SourceCodeRenderer.tokenize(
             code: markdown,
-            language: langInfo.grammarSearch,
+            language: entry.languageId,
             grammarData: grammarData,
             siblingGrammars: siblingGrammars,
             theme: theme
@@ -265,8 +263,7 @@ private extension MarkdownRenderer {
 
     static func highlightCodeBlocks(
         in html: String,
-        theme: ThemeData,
-        ide: IDEInfo
+        theme: ThemeData
     ) async -> String {
         // Match <pre><code class="language-LANG">...content...</code></pre>
         // cmark-gfm always emits this structure for fenced code blocks.
@@ -281,8 +278,6 @@ private extension MarkdownRenderer {
 
         // Process in reverse order so string replacement offsets stay valid
         var result = html
-        var grammarCache: [String: Data] = [:]
-        let grammarLoader = GrammarLoader(ide: ide)
 
         for match in matches.reversed() {
             let fullRange   = Range(match.range,           in: result)!
@@ -299,9 +294,7 @@ private extension MarkdownRenderer {
             let highlighted = await highlightSnippet(
                 code: code,
                 lang: lang,
-                theme: theme,
-                grammarLoader: grammarLoader,
-                grammarCache: &grammarCache
+                theme: theme
             )
 
             result.replaceSubrange(fullRange, with: highlighted)
@@ -314,36 +307,23 @@ private extension MarkdownRenderer {
     static func highlightSnippet(
         code: String,
         lang: String,
-        theme: ThemeData,
-        grammarLoader: GrammarLoader,
-        grammarCache: inout [String: Data]
+        theme: ThemeData
     ) async -> String {
         let plainFallback = makePlainBlock(code: code, lang: lang, theme: theme)
 
         guard !lang.isEmpty else { return plainFallback }
-        let langInfo = FileTypeRegistry.language(forCodeFenceTag: lang)
-
-        // Load grammar (cached)
-        let grammarData: Data
-        if let cached = grammarCache[langInfo.grammarSearch] {
-            grammarData = cached
-        } else {
-            guard let data = try? grammarLoader.grammarData(for: langInfo.grammarSearch) else {
-                return plainFallback
-            }
-            grammarCache[langInfo.grammarSearch] = data
-            grammarData = data
-        }
+        guard let entry = LanguageIndex.entry(forFenceTag: lang) else { return plainFallback }
+        guard let grammarData = LanguageIndex.grammarData(for: entry) else { return plainFallback }
 
         // Siblings satisfy cross-grammar `include` references (e.g. yaml
         // splits into yaml.tmLanguage + yaml-1.x + yaml-embedded). Without
         // them tokenization comes back empty for multi-file grammars.
-        let siblings = grammarLoader.siblingGrammarData(for: langInfo.grammarSearch)
+        let siblings = LanguageIndex.siblingGrammarData(for: entry)
 
         // Tokenize via shared TokenizerEngine (reuses warm JSContext)
         guard let rawLines = try? await SourceCodeRenderer.tokenize(
             code: code,
-            language: langInfo.grammarSearch,
+            language: entry.languageId,
             grammarData: grammarData,
             siblingGrammars: siblings,
             theme: theme

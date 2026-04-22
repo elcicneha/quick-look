@@ -6,7 +6,7 @@
 //
 //    L3 — App Group disk cache (survives process death).
 //         Invalidated by: mtime mismatch on IDE app / settings.json, schema bump, Refresh.
-//    L2 — Process-lifetime in-memory singletons (static vars on IDELocator/ThemeLoader/GrammarLoader).
+//    L2 — Process-lifetime in-memory singletons (static vars on IDELocator/ThemeLoader/LanguageIndex).
 //         Populated from L3 on first bootstrap(); survive across space-bar presses while
 //         macOS keeps the QL extension host warm.
 //    L1 — Per-render work: file read, tokenizeLine2 call, HTML build, WKWebView paint.
@@ -188,7 +188,7 @@ public enum CacheManager {
         IDELocator._cached = nil
         ThemeLoader._cachedTheme = nil
         ThemeLoader._cachedSerializedTheme = nil
-        GrammarLoader.invalidateStaticCaches()
+        LanguageIndex.invalidate()
         Task { await TokenizerEngine.shared.invalidate() }
     }
 
@@ -305,14 +305,11 @@ public enum CacheManager {
             ThemeLoader._cachedSerializedTheme = cached.serializedThemeJSON
         }
 
-        // Grammar index
-        let indexURL = dir.appendingPathComponent(DiskCacheSchema.grammarIndexFile)
+        // Language index
+        let indexURL = dir.appendingPathComponent(DiskCacheSchema.languageIndexFile)
         if let data = try? Data(contentsOf: indexURL),
-           let index = try? JSONDecoder().decode([String: String].self, from: data) {
-            let urlIndex = Dictionary(
-                uniqueKeysWithValues: index.map { ($0.key, URL(fileURLWithPath: $0.value)) }
-            )
-            GrammarLoader.seedURLIndex(urlIndex)
+           let snapshot = try? JSONDecoder().decode(LanguageIndex.Snapshot.self, from: data) {
+            LanguageIndex.seed(snapshot)
         }
 
         return IDELocator._cached != nil && ThemeLoader._cachedTheme != nil
@@ -341,8 +338,8 @@ public enum CacheManager {
             return false
         }
 
-        // 3. Build grammar index (one-time directory walk for all known languages).
-        let grammarIndex = buildGrammarIndex(ide: ide)
+        // 3. Build the language index from every extension's package.json.
+        let languageIndex = LanguageIndex.build(from: ide)
 
         // 4. Determine mtimes for manifest.
         let ideAppMtime    = mtime(of: ide.appURL.path)
@@ -385,11 +382,10 @@ public enum CacheManager {
             try? data.write(to: dir.appendingPathComponent(DiskCacheSchema.themeFile), options: .atomic)
         }
 
-        // Write grammar-index.json
-        let indexStrings = grammarIndex.mapValues { $0.path }
-        if let data = try? encoder.encode(indexStrings) {
+        // Write language-index.json
+        if let data = try? encoder.encode(languageIndex) {
             try? data.write(
-                to: dir.appendingPathComponent(DiskCacheSchema.grammarIndexFile),
+                to: dir.appendingPathComponent(DiskCacheSchema.languageIndexFile),
                 options: .atomic
             )
         }
@@ -414,24 +410,11 @@ public enum CacheManager {
         IDELocator._cached = ide
         ThemeLoader._cachedTheme = theme
         ThemeLoader._cachedSerializedTheme = serializedTheme
-        GrammarLoader.seedURLIndex(grammarIndex)
+        LanguageIndex.seed(languageIndex)
 
-        NSLog("[QuickLookCode] CacheManager: cache rebuilt for %@ (%d grammar entries)",
-              ide.name, grammarIndex.count)
+        NSLog("[QuickLookCode] CacheManager: cache rebuilt for %@ (%d languages, %d grammars)",
+              ide.name, languageIndex.byLanguageId.count, languageIndex.byScopeName.count)
         return true
-    }
-
-    // MARK: - Grammar index
-
-    private static func buildGrammarIndex(ide: IDEInfo) -> [String: URL] {
-        let loader = GrammarLoader(ide: ide)
-        var index: [String: URL] = [:]
-        for term in FileTypeRegistry.allGrammarSearchTerms {
-            if let url = loader.grammarURL(for: term) {
-                index[term] = url
-            }
-        }
-        return index
     }
 
     // MARK: - Helpers

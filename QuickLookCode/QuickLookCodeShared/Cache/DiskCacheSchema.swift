@@ -10,18 +10,18 @@ import Foundation
 
 enum DiskCacheSchema {
 
-    // Increment this when any Codable struct below changes OR when a grammar-
-    // index rebuild is needed (e.g. after fixing GrammarLoader's search logic).
-    static let schemaVersion = 2
+    // Increment this when any Codable struct below changes OR when the on-disk
+    // index needs to be rebuilt for any reason (e.g. fixing grammar resolution).
+    static let schemaVersion = 3
 
     static let appGroup = "group.com.nehagupta.quicklookcode"
     static let dirName  = "quicklookcode"
 
     // File names inside the cache directory.
-    static let manifestFile     = "manifest.json"
-    static let ideFile          = "ide.json"
-    static let themeFile        = "theme.json"
-    static let grammarIndexFile = "grammar-index.json"
+    static let manifestFile      = "manifest.json"
+    static let ideFile           = "ide.json"
+    static let themeFile         = "theme.json"
+    static let languageIndexFile = "language-index.json"
 
     // MARK: - Manifest
 
